@@ -34,6 +34,59 @@ function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number)
 }
 
 /**
+ * `promise` の解決を待つが、`signal` が abort された場合はそちらを優先して
+ * `null` で解決する。`promise` 自体は reject させない(複数回の呼び出しで
+ * 再利用される共有 Promise ―― 例えば動画のメタデータ読み込み Promise ――
+ * を、たまたま最初に待っていた呼び出しの abort で汚さないようにするため)。
+ * abort を待つために張ったリスナーは、どちらが先に解決してもここで
+ * 確実に解除する。
+ */
+function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T | null> {
+  if (!signal) {
+    return promise;
+  }
+  if (signal.aborted) {
+    return Promise.resolve(null);
+  }
+
+  return new Promise<T | null>((resolve, reject) => {
+    let isSettled = false;
+    const cleanup = () => {
+      signal.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      if (isSettled) {
+        return;
+      }
+      isSettled = true;
+      cleanup();
+      resolve(null);
+    };
+
+    signal.addEventListener('abort', onAbort, { once: true });
+
+    promise.then(
+      (value) => {
+        if (isSettled) {
+          return;
+        }
+        isSettled = true;
+        cleanup();
+        resolve(value);
+      },
+      (error: unknown) => {
+        if (isSettled) {
+          return;
+        }
+        isSettled = true;
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
+/**
  * `<video>` + seek + canvas を用いて動画からフレーム列を生成する `FrameSource` 実装。
  *
  * `requestVideoFrameCallback` は使わず、`currentTime` を進めて `seeked` イベントを
@@ -155,7 +208,12 @@ export class VideoSource implements FrameSource {
   }
 
   async *scan(opts: ScanOptions): AsyncGenerator<SampledFrame> {
-    const video = await this.ensureVideo();
+    // メタデータ読み込み待ち(ensureVideo)は複数回呼び出される共有 Promise なので
+    // signal による reject を混ぜ込まず、待機側を race させて abort を検知する。
+    const video = await raceWithAbort(this.ensureVideo(), opts.signal);
+    if (!video) {
+      return;
+    }
     const width = video.videoWidth;
     const height = video.videoHeight;
     const rawDurationMs = video.duration * 1000;

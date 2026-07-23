@@ -50,6 +50,58 @@ function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number)
   });
 }
 
+/**
+ * `promise` の解決を待つが、`signal` が abort された場合はそちらを優先して
+ * `null` で解決する。`promise` 自体は reject させない(複数回の呼び出しで
+ * 再利用される共有 Promise ―― 例えば GIF デコード Promise ―― を、たまたま
+ * 最初に待っていた呼び出しの abort で汚さないようにするため)。abort を
+ * 待つために張ったリスナーは、どちらが先に解決してもここで確実に解除する。
+ */
+function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T | null> {
+  if (!signal) {
+    return promise;
+  }
+  if (signal.aborted) {
+    return Promise.resolve(null);
+  }
+
+  return new Promise<T | null>((resolve, reject) => {
+    let isSettled = false;
+    const cleanup = () => {
+      signal.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      if (isSettled) {
+        return;
+      }
+      isSettled = true;
+      cleanup();
+      resolve(null);
+    };
+
+    signal.addEventListener('abort', onAbort, { once: true });
+
+    promise.then(
+      (value) => {
+        if (isSettled) {
+          return;
+        }
+        isSettled = true;
+        cleanup();
+        resolve(value);
+      },
+      (error: unknown) => {
+        if (isSettled) {
+          return;
+        }
+        isSettled = true;
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
 /** decompressFrames の 1 フレーム分の patch を、指定 canvas 上へ合成(重ね書き)する */
 function drawPatch(
   targetCtx: CanvasRenderingContext2D,
@@ -192,8 +244,11 @@ export class GifSource implements FrameSource {
   }
 
   async *scan(opts: ScanOptions): AsyncGenerator<SampledFrame> {
-    const frames = await this.ensureDecoded();
-    if (frames.length === 0 || opts.signal?.aborted) {
+    // デコード待ち(ensureDecoded)は複数回呼び出される共有 Promise なので
+    // signal による reject を混ぜ込まず、待機側を race させて abort を検知する。
+    // なお decompressFrames 自体は同期実行のため、その実行中の中断には対応しない。
+    const frames = await raceWithAbort(this.ensureDecoded(), opts.signal);
+    if (!frames || frames.length === 0) {
       return;
     }
 
