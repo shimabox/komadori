@@ -1,0 +1,6 @@
+node_modules
+dist
+package-lock.json
+
+# 計画ファイル(untracked, commit 対象外)は整形しない
+docs
