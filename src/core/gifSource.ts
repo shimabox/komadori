@@ -214,6 +214,15 @@ export class GifSource implements FrameSource {
   /** parseGIF 後、image を持つ生フレームだけを残した配列(まだ LZW 展開していない) */
   private rawFrames: RawImageFrame[] | null = null;
   private decodePromise: Promise<void> | null = null;
+  /**
+   * `parse()` の「世代」。`scan()` がキャンセル等で終了するたびに
+   * インクリメントする。`file.arrayBuffer()` の完了を待っている間に
+   * キャンセルされても、既にバックグラウンドで動いている `parse()` の
+   * Promise チェーン自体は止められない。この世代番号を使って、遅れて
+   * 完了した古い `parse()` が(scan() 側は既に破棄したはずの)
+   * `this.rawFrames` を再代入してしまわないようにする。
+   */
+  private parseGeneration = 0;
   private canvasWidth = 0;
   private canvasHeight = 0;
   private gct: GifColorTable = [];
@@ -243,11 +252,23 @@ export class GifSource implements FrameSource {
 
   /** `file.arrayBuffer()` + `parseGIF()` のみを行う(LZW 展開は含まない軽量処理) */
   private async parse(): Promise<void> {
+    // 呼び出し時点の世代を記録しておく。await の間に scan() がキャンセル
+    // 等で終了すると、finally が parseGeneration をインクリメントして
+    // この世代を無効化する。
+    const myGeneration = this.parseGeneration;
+
     let buffer: ArrayBuffer;
     try {
       buffer = await this.file.arrayBuffer();
     } catch {
       throw new Error('GIF ファイルの読み込みに失敗しました');
+    }
+
+    if (myGeneration !== this.parseGeneration) {
+      // 既に無効化された古い世代の parse。呼び出し元(scan())は
+      // キャンセル等で既に終了しており誰も結果を見ていないため、
+      // this.rawFrames 等には触れず、エラーにもせず静かに終了する。
+      return;
     }
 
     try {
@@ -380,6 +401,12 @@ export class GifSource implements FrameSource {
       // 残っていると ensureParsed が再パースせずに失敗してしまうため)。
       this.rawFrames = null;
       this.decodePromise = null;
+      // file.arrayBuffer() の完了待ちの間にキャンセルされた場合、
+      // バックグラウンドで動き続けている古い parse() が後から完了して
+      // 上の this.rawFrames = null を上書きしてしまわないよう、世代を
+      // 進めて無効化する(parse() 側は myGeneration !== this.parseGeneration
+      // を見て代入をスキップする)。
+      this.parseGeneration += 1;
     }
   }
 
@@ -411,5 +438,9 @@ export class GifSource implements FrameSource {
     this.rawFrames = null;
     this.decodePromise = null;
     this.decodedFrames = [];
+    // scan() を経由していない(呼ばれる前・呼ばれていない)場合の
+    // 保険として、ここでも世代を進めておく。通常経路では scan() の
+    // finally が既に進めているため無害な重複インクリメントになる。
+    this.parseGeneration += 1;
   }
 }
