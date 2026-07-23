@@ -306,6 +306,12 @@ function buildDownloadPlan(
 }
 
 async function downloadOne(frameIndex: number): Promise<void> {
+  // 開始時点の session を束縛しておく。renderFull の完了を待っている間に
+  // 別ファイルへ切り替わっていたら(= session がずれていたら)、以降の
+  // UI 操作やダウンロードは行わず静かに終了する(新しい画面にエラーを
+  // 出さない。切替時に旧 source が dispose され renderFull が失敗しても
+  // このチェックで黙って終わる)。
+  const session = currentSession;
   const source = frameSource;
   if (!source) {
     return;
@@ -325,14 +331,25 @@ async function downloadOne(frameIndex: number): Promise<void> {
 
   try {
     const blob = await source.renderFull(frame);
+    if (session !== currentSession) {
+      return;
+    }
     triggerBlobDownload(blob, buildFrameFileName(sequence, frame.timestampMs));
   } catch (error) {
+    if (session !== currentSession) {
+      return;
+    }
     console.error(error);
     notice.add('error', 'PNG の生成に失敗しました。');
   }
 }
 
 async function downloadZip(): Promise<void> {
+  // downloadOne 同様、開始時点の session とファイル名を束縛する。ZIP 名は
+  // 完了時点のグローバル状態(切り替わっているかもしれない)ではなく、
+  // ここで束縛した baseName を使う。
+  const session = currentSession;
+  const baseName = currentFileBaseName;
   const source = frameSource;
   if (!source) {
     return;
@@ -350,20 +367,45 @@ async function downloadZip(): Promise<void> {
   try {
     const entries: { filename: string; blob: Blob }[] = [];
     for (let i = 0; i < targets.length; i++) {
+      if (session !== currentSession) {
+        return;
+      }
+
       const { sequence, frame } = targets[i];
       resultsList.setZipButtonLabel(`生成中… (${i + 1}/${targets.length})`);
+
       const blob = await source.renderFull(frame);
+      if (session !== currentSession) {
+        return;
+      }
+
       entries.push({ filename: buildFrameFileName(sequence, frame.timestampMs), blob });
     }
 
+    if (session !== currentSession) {
+      return;
+    }
     resultsList.setZipButtonLabel('ZIP にまとめています…');
+
     const zipBlob = await createZip(entries);
-    triggerBlobDownload(zipBlob, `${currentFileBaseName}_frames.zip`);
+    if (session !== currentSession) {
+      return;
+    }
+
+    triggerBlobDownload(zipBlob, `${baseName}_frames.zip`);
   } catch (error) {
+    if (session !== currentSession) {
+      return;
+    }
     console.error(error);
     notice.add('error', 'ZIP の生成に失敗しました。');
   } finally {
-    resultsList.resetZipButtonLabel();
-    resultsList.setZipButtonEnabled(true);
+    // 新セッション側の ZIP ボタンは handleFile 冒頭の resultsList.reset() /
+    // finalize() が初期化・復元する前提なので、旧セッションの後始末で
+    // 新しい画面の状態を上書きしないようにする。
+    if (session === currentSession) {
+      resultsList.resetZipButtonLabel();
+      resultsList.setZipButtonEnabled(true);
+    }
   }
 }
