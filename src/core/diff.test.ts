@@ -49,6 +49,28 @@ describe('toGray64', () => {
     expect(result.every((v) => v === expected)).toBe(true);
   });
 
+  it('64x64 より小さい単色画像でも、黒セルが混ざらず全セルが同じ輝度値になる(正方形)', () => {
+    // 0.299*10 + 0.587*20 + 0.114*30 = 18.6 -> round -> 19
+    const image = makeSolidImage(32, 32, [10, 20, 30]);
+    const result = toGray64(image);
+    const expected = Math.round(0.299 * 10 + 0.587 * 20 + 0.114 * 30);
+    expect(result.every((v) => v === expected)).toBe(true);
+  });
+
+  it('64x64 より小さい単色画像でも、黒セルが混ざらず全セルが同じ輝度値になる(非正方形)', () => {
+    const image = makeSolidImage(10, 50, [90, 150, 60]);
+    const result = toGray64(image);
+    const expected = Math.round(0.299 * 90 + 0.587 * 150 + 0.114 * 60);
+    expect(result.every((v) => v === expected)).toBe(true);
+  });
+
+  it('1x1 の単色画像でも全セルがその画素の輝度値になる', () => {
+    const image = makeSolidImage(1, 1, [128, 64, 32]);
+    const result = toGray64(image);
+    const expected = Math.round(0.299 * 128 + 0.587 * 64 + 0.114 * 32);
+    expect(result.every((v) => v === expected)).toBe(true);
+  });
+
   it('左右で明暗が分かれた画像は、左端のセルが暗く右端のセルが明るくなる', () => {
     const image = makeSplitImage(128, 64);
     const result = toGray64(image);
