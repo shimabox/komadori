@@ -274,14 +274,22 @@ export class GifSource implements FrameSource {
   }
 
   async *scan(opts: ScanOptions): AsyncGenerator<SampledFrame> {
-    // パース待ち(ensureParsed)は複数回呼び出される共有 Promise なので
-    // signal による reject を混ぜ込まず、待機側を race させて abort を検知する。
-    const rawFrames = await raceWithAbort(this.ensureParsed(), opts.signal);
-    if (!rawFrames || rawFrames.length === 0) {
-      return;
-    }
-
+    // try を raceWithAbort の呼び出し自体を含む形で広く取ることで、
+    // 「ensureParsed() の内部 Promise は resolve 済みで this.rawFrames は
+    // 既にセットされているが、そのマイクロタスクが処理される前に abort
+    // イベントが先に isSettled を確定させてしまい raceWithAbort が
+    // ローカル変数側には null を返す」というレースが起きた場合の早期
+    // return も含めて、finally で確実に解放されるようにする
+    // (この分岐だけ finally の外に出してしまうと、その競合発生時に
+    // this.rawFrames が非 null のまま取り残されてしまうため)。
     try {
+      // パース待ち(ensureParsed)は複数回呼び出される共有 Promise なので
+      // signal による reject を混ぜ込まず、待機側を race させて abort を検知する。
+      const rawFrames = await raceWithAbort(this.ensureParsed(), opts.signal);
+      if (!rawFrames || rawFrames.length === 0) {
+        return;
+      }
+
       const maxSamples = Math.max(1, opts.maxSamples);
       const outputIndices = pickEvenIndices(rawFrames.length, maxSamples);
       const outputSet = new Set(outputIndices);
