@@ -179,8 +179,14 @@ function applyThreshold(): void {
 async function handleFile(file: File): Promise<void> {
   const session = ++currentSession;
 
-  // 進行中のスキャンがあれば中断する
+  // 進行中のスキャンがあれば中断し、状態を初期化する。
+  // ここで設定パネルを一旦必ず有効化しておく(非対応形式などスキャンを
+  // 開始しない return パスを通っても、直前のスキャンの finally が
+  // `session !== currentSession` で復元処理をスキップするため、ここで
+  // 復元しないと設定パネルが無効のまま固まってしまう)。実際にスキャンを
+  // 開始する場合は、この直後で改めて無効化する。
   abortController?.abort();
+  abortController = null;
   frameSource?.dispose();
   frameSource = null;
   frames = [];
@@ -189,6 +195,7 @@ async function handleFile(file: File): Promise<void> {
   notice.clear();
   resultsList.reset();
   progressPanel.stop();
+  settingsPanel.setDisabled(false);
   dropzone.setFileName(file.name);
   currentFileBaseName = stripExtension(file.name) || 'frames';
 
