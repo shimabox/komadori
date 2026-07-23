@@ -95,15 +95,51 @@ export class VideoSource implements FrameSource {
     return this.videoReadyPromise;
   }
 
-  private seekTo(video: HTMLVideoElement, timeSec: number): Promise<void> {
-    return new Promise((resolve) => {
-      const onSeeked = () => {
+  /**
+   * `currentTime` を設定し、`seeked` イベントを待つ。
+   *
+   * - seek 中に動画のデコードエラー等で `error` イベントが発火した場合は
+   *   reject し、`seeked` を待ち続けてハングしないようにする。
+   * - `signal` が渡されていて abort された場合も速やかに reject し、
+   *   待機がいつまでも解決されない状態を避ける(呼び出し側は abort による
+   *   reject かどうかを `signal.aborted` で判定して静かに終了してよい)。
+   * - どの経路で settle した場合でも、登録したイベントリスナーは必ず
+   *   すべて解除する(リーク防止)。
+   */
+  private seekTo(video: HTMLVideoElement, timeSec: number, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) {
+      return Promise.reject(this.createAbortError());
+    }
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
         video.removeEventListener('seeked', onSeeked);
+        video.removeEventListener('error', onError);
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const onSeeked = () => {
+        cleanup();
         resolve();
       };
+      const onError = () => {
+        cleanup();
+        reject(new Error('動画のシークに失敗しました。対応していない形式の可能性があります。'));
+      };
+      const onAbort = () => {
+        cleanup();
+        reject(this.createAbortError());
+      };
+
       video.addEventListener('seeked', onSeeked);
+      video.addEventListener('error', onError);
+      signal?.addEventListener('abort', onAbort, { once: true });
+
       video.currentTime = timeSec;
     });
+  }
+
+  private createAbortError(): DOMException {
+    return new DOMException('中断されました', 'AbortError');
   }
 
   private renderThumbnail(source: CanvasImageSource, width: number, height: number): Promise<Blob> {
@@ -136,10 +172,10 @@ export class VideoSource implements FrameSource {
       if (opts.signal?.aborted) {
         return;
       }
-      const frame = await this.runExclusive(async (v) => {
-        await this.seekTo(v, 0);
-        return this.captureFrame(v, grayCtx, 0, 0, width, height);
-      });
+      const frame = await this.captureAt(0, 0, grayCtx, width, height, opts.signal);
+      if (!frame || opts.signal?.aborted) {
+        return;
+      }
       opts.onProgress?.(1, 1);
       yield frame;
       return;
@@ -155,13 +191,8 @@ export class VideoSource implements FrameSource {
         return;
       }
 
-      const timestampMs = t;
-      const frame = await this.runExclusive(async (v) => {
-        await this.seekTo(v, timestampMs / 1000);
-        return this.captureFrame(v, grayCtx, index, timestampMs, width, height);
-      });
-
-      if (opts.signal?.aborted) {
+      const frame = await this.captureAt(t, index, grayCtx, width, height, opts.signal);
+      if (!frame || opts.signal?.aborted) {
         return;
       }
 
@@ -169,6 +200,33 @@ export class VideoSource implements FrameSource {
       index += 1;
       opts.onProgress?.(sampled, estimatedTotal);
       yield frame;
+    }
+  }
+
+  /**
+   * 指定タイムスタンプへ seek してフレームを取得する。`signal` が abort された
+   * ことによる失敗(=`seekTo` が AbortError を reject)は静かに `null` を返し、
+   * それ以外の失敗(デコードエラー等)はそのまま再 throw して呼び出し元の
+   * 通常のエラーフローに乗せる。
+   */
+  private async captureAt(
+    timestampMs: number,
+    index: number,
+    grayCtx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    signal: AbortSignal | undefined,
+  ): Promise<SampledFrame | null> {
+    try {
+      return await this.runExclusive(async (v) => {
+        await this.seekTo(v, timestampMs / 1000, signal);
+        return this.captureFrame(v, grayCtx, index, timestampMs, width, height);
+      });
+    } catch (error) {
+      if (signal?.aborted) {
+        return null;
+      }
+      throw error;
     }
   }
 
