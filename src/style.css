@@ -43,6 +43,18 @@
   box-sizing: border-box;
 }
 
+/*
+ * 一部のパネル(.progress-panel, .results-panel 等)は `display: flex` を
+ * 指定しつつ JS 側で `hidden` 属性による表示/非表示切り替えも行う。
+ * `[hidden] { display: none }` は UA スタイルシート由来のため、同じ
+ * 詳細度の author スタイル(`display: flex` 等)に負けて上書きされてしまう。
+ * ここで author スタイルとして明示的に強制することで、hidden 属性が
+ * 常に見た目にも反映されるようにする。
+ */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   margin: 0;
