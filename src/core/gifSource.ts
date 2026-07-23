@@ -1,5 +1,5 @@
-import { decompressFrames, parseGIF } from 'gifuct-js';
-import type { ParsedFrame } from 'gifuct-js';
+import { decompressFrame, parseGIF } from 'gifuct-js';
+import type { ParsedFrame, ParsedGif } from 'gifuct-js';
 import { toGray64 } from './diff';
 import type { FrameSource } from './frameSource';
 import type { SampledFrame, ScanOptions } from './types';
@@ -9,6 +9,8 @@ const THUMBNAIL_MAX_WIDTH = 360;
 const THUMBNAIL_QUALITY = 0.85;
 /** gce が存在せず delay が取得できないフレームに対するフォールバック値(ミリ秒) */
 const FALLBACK_DELAY_MS = 100;
+/** この時間(ミリ秒)以上、間を置かずに処理が続いたら一度イベントループへ制御を返す */
+const YIELD_INTERVAL_MS = 16;
 
 interface Rect {
   left: number;
@@ -21,6 +23,21 @@ interface Rect {
 interface DisposalState {
   pendingClearRect: Rect | null;
   pendingRestoreSnapshot: ImageData | null;
+}
+
+/** parseGIF が返す `frames` 配列の要素(拡張ブロックと画像フレームが混在する) */
+type RawGifFrame = ParsedGif['frames'][number];
+/** そのうち画像を持つ要素だけ(= decompressFrame に渡せるもの) */
+type RawImageFrame = Extract<RawGifFrame, { image: unknown }>;
+type GifColorTable = ParsedGif['gct'];
+
+/**
+ * `parseGIF` の `frames` には Application 等の拡張ブロックも混在するため、
+ * `image` プロパティを持つ要素だけを LZW 展開の対象にする
+ * (`decompressFrames` の内部実装 `.filter(f => f.image)` と同じ挙動)。
+ */
+function hasImage(item: RawGifFrame): item is RawImageFrame {
+  return 'image' in item;
 }
 
 function requireContext(
@@ -53,7 +70,7 @@ function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number)
 /**
  * `promise` の解決を待つが、`signal` が abort された場合はそちらを優先して
  * `null` で解決する。`promise` 自体は reject させない(複数回の呼び出しで
- * 再利用される共有 Promise ―― 例えば GIF デコード Promise ―― を、たまたま
+ * 再利用される共有 Promise ―― 例えば GIF パース Promise ―― を、たまたま
  * 最初に待っていた呼び出しの abort で汚さないようにするため)。abort を
  * 待つために張ったリスナーは、どちらが先に解決してもここで確実に解除する。
  */
@@ -102,7 +119,7 @@ function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined):
   });
 }
 
-/** decompressFrames の 1 フレーム分の patch を、指定 canvas 上へ合成(重ね書き)する */
+/** decompressFrame の 1 フレーム分の patch を、指定 canvas 上へ合成(重ね書き)する */
 function drawPatch(
   targetCtx: CanvasRenderingContext2D,
   patchCanvas: HTMLCanvasElement,
@@ -180,17 +197,29 @@ function pickEvenIndices(total: number, maxSamples: number): number[] {
 /**
  * `gifuct-js` で GIF をデコードしフレーム列を生成する `FrameSource` 実装。
  *
+ * `parseGIF` はメタデータと圧縮済みブロックを取り出すだけの軽い処理なので
+ * 共有 Promise(`decode`)でまとめて待つが、フレームごとの LZW 展開
+ * (`decompressFrame`)は CPU 負荷が高く GIF 全体では長時間ブロックしうるため、
+ * `scan()` の中でフレーム単位に行い、一定時間ごとにイベントループへ制御を
+ * 返してキャンセルを検知できるようにする。
+ *
  * GIF は間引きなしで全フレームを合成(disposal 処理込み)した上で、
- * 出力するサンプル数だけ均等間引きする。デコード結果(`decompressFrames` の出力)は
- * `renderFull` での再合成のためインスタンス内に保持し、`dispose()` まで破棄しない。
+ * 出力するサンプル数だけ均等間引きする。展開済みフレーム(patch 付き)は
+ * `renderFull` での再合成のためインスタンス内に蓄積し、`dispose()` まで
+ * 破棄しない(スキャンが先行し、`renderFull` はスキャン済みフレームに対して
+ * のみ呼ばれる前提)。
  */
 export class GifSource implements FrameSource {
   private readonly file: File;
-  private decodedFrames: ParsedFrame[] | null = null;
+  /** parseGIF 後、image を持つ生フレームだけを残した配列(まだ LZW 展開していない) */
+  private rawFrames: RawImageFrame[] | null = null;
   private decodePromise: Promise<void> | null = null;
   private canvasWidth = 0;
   private canvasHeight = 0;
-  /** yield した SampledFrame.index -> decompressFrames 配列中の元インデックス */
+  private gct: GifColorTable = [];
+  /** scan() 中にフレーム単位で LZW 展開して蓄積したもの(renderFull の再合成に使う) */
+  private decodedFrames: ParsedFrame[] = [];
+  /** yield した SampledFrame.index -> rawFrames/decodedFrames 配列中の元インデックス */
   private sampleToOriginalIndex: number[] = [];
   private disposed = false;
 
@@ -198,21 +227,22 @@ export class GifSource implements FrameSource {
     this.file = file;
   }
 
-  private async ensureDecoded(): Promise<ParsedFrame[]> {
-    if (this.decodedFrames) {
-      return this.decodedFrames;
+  private async ensureParsed(): Promise<RawImageFrame[]> {
+    if (this.rawFrames) {
+      return this.rawFrames;
     }
     if (!this.decodePromise) {
-      this.decodePromise = this.decode();
+      this.decodePromise = this.parse();
     }
     await this.decodePromise;
-    if (!this.decodedFrames) {
+    if (!this.rawFrames) {
       throw new Error('GIF のデコードに失敗しました');
     }
-    return this.decodedFrames;
+    return this.rawFrames;
   }
 
-  private async decode(): Promise<void> {
+  /** `file.arrayBuffer()` + `parseGIF()` のみを行う(LZW 展開は含まない軽量処理) */
+  private async parse(): Promise<void> {
     let buffer: ArrayBuffer;
     try {
       buffer = await this.file.arrayBuffer();
@@ -222,10 +252,10 @@ export class GifSource implements FrameSource {
 
     try {
       const gif = parseGIF(buffer);
-      const frames = decompressFrames(gif, true);
       this.canvasWidth = gif.lsd.width;
       this.canvasHeight = gif.lsd.height;
-      this.decodedFrames = frames;
+      this.gct = gif.gct;
+      this.rawFrames = gif.frames.filter(hasImage);
     } catch {
       throw new Error('GIF の解析に失敗しました。対応していない形式の可能性があります。');
     }
@@ -244,16 +274,15 @@ export class GifSource implements FrameSource {
   }
 
   async *scan(opts: ScanOptions): AsyncGenerator<SampledFrame> {
-    // デコード待ち(ensureDecoded)は複数回呼び出される共有 Promise なので
+    // パース待ち(ensureParsed)は複数回呼び出される共有 Promise なので
     // signal による reject を混ぜ込まず、待機側を race させて abort を検知する。
-    // なお decompressFrames 自体は同期実行のため、その実行中の中断には対応しない。
-    const frames = await raceWithAbort(this.ensureDecoded(), opts.signal);
-    if (!frames || frames.length === 0) {
+    const rawFrames = await raceWithAbort(this.ensureParsed(), opts.signal);
+    if (!rawFrames || rawFrames.length === 0) {
       return;
     }
 
     const maxSamples = Math.max(1, opts.maxSamples);
-    const outputIndices = pickEvenIndices(frames.length, maxSamples);
+    const outputIndices = pickEvenIndices(rawFrames.length, maxSamples);
     const outputSet = new Set(outputIndices);
     const estimatedTotal = outputIndices.length;
 
@@ -271,19 +300,23 @@ export class GifSource implements FrameSource {
     const grayCtx = requireContext(grayCanvas, true);
 
     const state: DisposalState = { pendingClearRect: null, pendingRestoreSnapshot: null };
+    this.decodedFrames = [];
     this.sampleToOriginalIndex = [];
 
     let elapsedMs = 0;
     let sampled = 0;
+    let lastYieldAt = performance.now();
 
-    for (let i = 0; i < frames.length; i++) {
+    for (let i = 0; i < rawFrames.length; i++) {
       if (opts.signal?.aborted) {
         return;
       }
 
-      const frame = frames[i];
-      const timestampMs = elapsedMs;
+      // LZW 展開(CPU 負荷が高い部分)をフレーム単位で行う。
+      const frame = decompressFrame(rawFrames[i], this.gct, true);
+      this.decodedFrames.push(frame);
 
+      const timestampMs = elapsedMs;
       applyFrameToCanvas(ctx, patchCanvas, patchCtx, frame, state);
 
       if (outputSet.has(i)) {
@@ -305,16 +338,31 @@ export class GifSource implements FrameSource {
         sampled += 1;
         opts.onProgress?.(sampled, estimatedTotal);
         yield sampledFrame;
+
+        if (opts.signal?.aborted) {
+          return;
+        }
       }
 
       const delay =
         typeof frame.delay === 'number' && frame.delay > 0 ? frame.delay : FALLBACK_DELAY_MS;
       elapsedMs += delay;
+
+      // yield によるサスペンドは Promise の解決(マイクロタスク)止まりで、
+      // ブラウザの入力処理・再描画までは保証されない。一定時間ごとに
+      // setTimeout でマクロタスク境界まで制御を返し、キャンセルボタンの
+      // クリックなどが確実に処理されるようにする。
+      if (performance.now() - lastYieldAt >= YIELD_INTERVAL_MS) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        lastYieldAt = performance.now();
+        if (opts.signal?.aborted) {
+          return;
+        }
+      }
     }
   }
 
   async renderFull(frame: SampledFrame): Promise<Blob> {
-    const frames = await this.ensureDecoded();
     const originalIndex = this.sampleToOriginalIndex[frame.index] ?? 0;
 
     const canvas = document.createElement('canvas');
@@ -326,9 +374,9 @@ export class GifSource implements FrameSource {
     const patchCtx = requireContext(patchCanvas);
 
     const state: DisposalState = { pendingClearRect: null, pendingRestoreSnapshot: null };
-    const lastIndex = Math.min(originalIndex, frames.length - 1);
+    const lastIndex = Math.min(originalIndex, this.decodedFrames.length - 1);
     for (let i = 0; i <= lastIndex; i++) {
-      applyFrameToCanvas(ctx, patchCanvas, patchCtx, frames[i], state);
+      applyFrameToCanvas(ctx, patchCanvas, patchCtx, this.decodedFrames[i], state);
     }
 
     return canvasToBlob(canvas, 'image/png');
@@ -339,7 +387,8 @@ export class GifSource implements FrameSource {
       return;
     }
     this.disposed = true;
-    this.decodedFrames = null;
+    this.rawFrames = null;
     this.decodePromise = null;
+    this.decodedFrames = [];
   }
 }
