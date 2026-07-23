@@ -281,84 +281,97 @@ export class GifSource implements FrameSource {
       return;
     }
 
-    const maxSamples = Math.max(1, opts.maxSamples);
-    const outputIndices = pickEvenIndices(rawFrames.length, maxSamples);
-    const outputSet = new Set(outputIndices);
-    const estimatedTotal = outputIndices.length;
+    try {
+      const maxSamples = Math.max(1, opts.maxSamples);
+      const outputIndices = pickEvenIndices(rawFrames.length, maxSamples);
+      const outputSet = new Set(outputIndices);
+      const estimatedTotal = outputIndices.length;
 
-    const canvas = document.createElement('canvas');
-    canvas.width = this.canvasWidth;
-    canvas.height = this.canvasHeight;
-    const ctx = requireContext(canvas, true);
+      const canvas = document.createElement('canvas');
+      canvas.width = this.canvasWidth;
+      canvas.height = this.canvasHeight;
+      const ctx = requireContext(canvas, true);
 
-    const patchCanvas = document.createElement('canvas');
-    const patchCtx = requireContext(patchCanvas);
+      const patchCanvas = document.createElement('canvas');
+      const patchCtx = requireContext(patchCanvas);
 
-    const grayCanvas = document.createElement('canvas');
-    grayCanvas.width = GRAY_SIZE;
-    grayCanvas.height = GRAY_SIZE;
-    const grayCtx = requireContext(grayCanvas, true);
+      const grayCanvas = document.createElement('canvas');
+      grayCanvas.width = GRAY_SIZE;
+      grayCanvas.height = GRAY_SIZE;
+      const grayCtx = requireContext(grayCanvas, true);
 
-    const state: DisposalState = { pendingClearRect: null, pendingRestoreSnapshot: null };
-    this.decodedFrames = [];
-    this.sampleToOriginalIndex = [];
+      const state: DisposalState = { pendingClearRect: null, pendingRestoreSnapshot: null };
+      this.decodedFrames = [];
+      this.sampleToOriginalIndex = [];
 
-    let elapsedMs = 0;
-    let sampled = 0;
-    let lastYieldAt = performance.now();
+      let elapsedMs = 0;
+      let sampled = 0;
+      let lastYieldAt = performance.now();
 
-    for (let i = 0; i < rawFrames.length; i++) {
-      if (opts.signal?.aborted) {
-        return;
-      }
-
-      // LZW 展開(CPU 負荷が高い部分)をフレーム単位で行う。
-      const frame = decompressFrame(rawFrames[i], this.gct, true);
-      this.decodedFrames.push(frame);
-
-      const timestampMs = elapsedMs;
-      applyFrameToCanvas(ctx, patchCanvas, patchCtx, frame, state);
-
-      if (outputSet.has(i)) {
-        grayCtx.clearRect(0, 0, GRAY_SIZE, GRAY_SIZE);
-        grayCtx.drawImage(canvas, 0, 0, GRAY_SIZE, GRAY_SIZE);
-        const grayImageData = grayCtx.getImageData(0, 0, GRAY_SIZE, GRAY_SIZE);
-        const gray64 = toGray64(grayImageData);
-        const thumbnail = await this.renderThumbnail(canvas, this.canvasWidth, this.canvasHeight);
-
-        this.sampleToOriginalIndex.push(i);
-        const sampledFrame: SampledFrame = {
-          index: sampled,
-          timestampMs,
-          gray64,
-          thumbnail,
-          width: this.canvasWidth,
-          height: this.canvasHeight,
-        };
-        sampled += 1;
-        opts.onProgress?.(sampled, estimatedTotal);
-        yield sampledFrame;
-
+      for (let i = 0; i < rawFrames.length; i++) {
         if (opts.signal?.aborted) {
           return;
         }
-      }
 
-      const delay =
-        typeof frame.delay === 'number' && frame.delay > 0 ? frame.delay : FALLBACK_DELAY_MS;
-      elapsedMs += delay;
+        // LZW 展開(CPU 負荷が高い部分)をフレーム単位で行う。
+        const frame = decompressFrame(rawFrames[i], this.gct, true);
+        this.decodedFrames.push(frame);
 
-      // yield によるサスペンドは Promise の解決(マイクロタスク)止まりで、
-      // ブラウザの入力処理・再描画までは保証されない。一定時間ごとに
-      // setTimeout でマクロタスク境界まで制御を返し、キャンセルボタンの
-      // クリックなどが確実に処理されるようにする。
-      if (performance.now() - lastYieldAt >= YIELD_INTERVAL_MS) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-        lastYieldAt = performance.now();
-        if (opts.signal?.aborted) {
-          return;
+        const timestampMs = elapsedMs;
+        applyFrameToCanvas(ctx, patchCanvas, patchCtx, frame, state);
+
+        if (outputSet.has(i)) {
+          grayCtx.clearRect(0, 0, GRAY_SIZE, GRAY_SIZE);
+          grayCtx.drawImage(canvas, 0, 0, GRAY_SIZE, GRAY_SIZE);
+          const grayImageData = grayCtx.getImageData(0, 0, GRAY_SIZE, GRAY_SIZE);
+          const gray64 = toGray64(grayImageData);
+          const thumbnail = await this.renderThumbnail(canvas, this.canvasWidth, this.canvasHeight);
+
+          this.sampleToOriginalIndex.push(i);
+          const sampledFrame: SampledFrame = {
+            index: sampled,
+            timestampMs,
+            gray64,
+            thumbnail,
+            width: this.canvasWidth,
+            height: this.canvasHeight,
+          };
+          sampled += 1;
+          opts.onProgress?.(sampled, estimatedTotal);
+          yield sampledFrame;
+
+          if (opts.signal?.aborted) {
+            return;
+          }
+        }
+
+        const delay =
+          typeof frame.delay === 'number' && frame.delay > 0 ? frame.delay : FALLBACK_DELAY_MS;
+        elapsedMs += delay;
+
+        // yield によるサスペンドは Promise の解決(マイクロタスク)止まりで、
+        // ブラウザの入力処理・再描画までは保証されない。一定時間ごとに
+        // setTimeout でマクロタスク境界まで制御を返し、キャンセルボタンの
+        // クリックなどが確実に処理されるようにする。
+        if (performance.now() - lastYieldAt >= YIELD_INTERVAL_MS) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          lastYieldAt = performance.now();
+          if (opts.signal?.aborted) {
+            return;
+          }
         }
       }
+    } finally {
+      // スキャン完了・中断(signal による早期 return)・呼び出し側の
+      // for await が早期 return/break して .return() 経由で抜けた場合の
+      // いずれでも、展開前の圧縮フレームデータ(rawFrames)はもう不要になる
+      // ため解放する。renderFull が使う decodedFrames(展開済み)は
+      // ここでは触れない。decodePromise も一緒に null に戻しておくことで、
+      // 万一 scan() が再度呼ばれても ensureParsed() が安全に再パースできる
+      // ようにする(rawFrames だけ null であっても、古い decodePromise が
+      // 残っていると ensureParsed が再パースせずに失敗してしまうため)。
+      this.rawFrames = null;
+      this.decodePromise = null;
     }
   }
 
