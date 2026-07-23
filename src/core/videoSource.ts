@@ -34,25 +34,31 @@ function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number)
 }
 
 /**
- * `promise` の解決を待つが、`signal` が abort された場合はそちらを優先して
- * `null` で解決する。`promise` 自体は reject させない(複数回の呼び出しで
- * 再利用される共有 Promise ―― 例えば動画のメタデータ読み込み Promise ――
- * を、たまたま最初に待っていた呼び出しの abort で汚さないようにするため)。
- * abort を待つために張ったリスナーは、どちらが先に解決してもここで
- * 確実に解除する。
+ * `promise` の解決を待つが、渡された `signals` のいずれかが abort された場合は
+ * そちらを優先して `null` で解決する。`promise` 自体は reject させない
+ * (複数回の呼び出しで再利用される共有 Promise ―― 例えば動画のメタデータ
+ * 読み込み Promise ―― を、たまたま最初に待っていた呼び出しの abort で
+ * 汚さないようにするため)。abort を待つために張ったリスナーは、どの経路で
+ * 解決してもここで確実にすべて解除する。
  */
-function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T | null> {
-  if (!signal) {
+function raceWithAbort<T>(
+  promise: Promise<T>,
+  signals: readonly (AbortSignal | undefined)[],
+): Promise<T | null> {
+  const active = signals.filter((s): s is AbortSignal => Boolean(s));
+  if (active.length === 0) {
     return promise;
   }
-  if (signal.aborted) {
+  if (active.some((s) => s.aborted)) {
     return Promise.resolve(null);
   }
 
   return new Promise<T | null>((resolve, reject) => {
     let isSettled = false;
     const cleanup = () => {
-      signal.removeEventListener('abort', onAbort);
+      for (const s of active) {
+        s.removeEventListener('abort', onAbort);
+      }
     };
     const onAbort = () => {
       if (isSettled) {
@@ -63,7 +69,9 @@ function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined):
       resolve(null);
     };
 
-    signal.addEventListener('abort', onAbort, { once: true });
+    for (const s of active) {
+      s.addEventListener('abort', onAbort, { once: true });
+    }
 
     promise.then(
       (value) => {
@@ -98,6 +106,14 @@ export class VideoSource implements FrameSource {
   private videoReadyPromise: Promise<HTMLVideoElement> | null = null;
   private queue: Promise<unknown> = Promise.resolve();
   private disposed = false;
+  /**
+   * `dispose()` 時に abort する内部専用のシグナル。`renderFull()` は
+   * `scan()` のような外部 `AbortSignal` を受け取らないため、これが無いと
+   * ダウンロード中にファイルを切り替えて `dispose()` された際、進行中の
+   * `seekTo` の待機が永久に解決されず宙吊りになる(`dispose()` の
+   * `removeAttribute('src')` + `load()` では `seeked`/`error` は発火しない)。
+   */
+  private readonly disposeController = new AbortController();
 
   constructor(file: File) {
     this.objectUrl = URL.createObjectURL(file);
@@ -153,14 +169,20 @@ export class VideoSource implements FrameSource {
    *
    * - seek 中に動画のデコードエラー等で `error` イベントが発火した場合は
    *   reject し、`seeked` を待ち続けてハングしないようにする。
-   * - `signal` が渡されていて abort された場合も速やかに reject し、
-   *   待機がいつまでも解決されない状態を避ける(呼び出し側は abort による
-   *   reject かどうかを `signal.aborted` で判定して静かに終了してよい)。
+   * - `signal`(スキャンの中断用)・`disposeSignal`(`dispose()` 用)の
+   *   どちらかが abort された場合も速やかに reject し、待機がいつまでも
+   *   解決されない状態を避ける(呼び出し側は abort による reject かどうかを
+   *   判定して静かに終了してよい)。
    * - どの経路で settle した場合でも、登録したイベントリスナーは必ず
    *   すべて解除する(リーク防止)。
    */
-  private seekTo(video: HTMLVideoElement, timeSec: number, signal?: AbortSignal): Promise<void> {
-    if (signal?.aborted) {
+  private seekTo(
+    video: HTMLVideoElement,
+    timeSec: number,
+    signal?: AbortSignal,
+    disposeSignal?: AbortSignal,
+  ): Promise<void> {
+    if (signal?.aborted || disposeSignal?.aborted) {
       return Promise.reject(this.createAbortError());
     }
 
@@ -169,6 +191,7 @@ export class VideoSource implements FrameSource {
         video.removeEventListener('seeked', onSeeked);
         video.removeEventListener('error', onError);
         signal?.removeEventListener('abort', onAbort);
+        disposeSignal?.removeEventListener('abort', onAbort);
       };
       const onSeeked = () => {
         cleanup();
@@ -186,6 +209,7 @@ export class VideoSource implements FrameSource {
       video.addEventListener('seeked', onSeeked);
       video.addEventListener('error', onError);
       signal?.addEventListener('abort', onAbort, { once: true });
+      disposeSignal?.addEventListener('abort', onAbort, { once: true });
 
       video.currentTime = timeSec;
     });
@@ -209,8 +233,12 @@ export class VideoSource implements FrameSource {
 
   async *scan(opts: ScanOptions): AsyncGenerator<SampledFrame> {
     // メタデータ読み込み待ち(ensureVideo)は複数回呼び出される共有 Promise なので
-    // signal による reject を混ぜ込まず、待機側を race させて abort を検知する。
-    const video = await raceWithAbort(this.ensureVideo(), opts.signal);
+    // signal による reject を混ぜ込まず、待機側を race させて abort を検知する
+    // (スキャンの signal と dispose() 用の内部シグナルの両方を見る)。
+    const video = await raceWithAbort(this.ensureVideo(), [
+      opts.signal,
+      this.disposeController.signal,
+    ]);
     if (!video) {
       return;
     }
@@ -262,10 +290,10 @@ export class VideoSource implements FrameSource {
   }
 
   /**
-   * 指定タイムスタンプへ seek してフレームを取得する。`signal` が abort された
-   * ことによる失敗(=`seekTo` が AbortError を reject)は静かに `null` を返し、
-   * それ以外の失敗(デコードエラー等)はそのまま再 throw して呼び出し元の
-   * 通常のエラーフローに乗せる。
+   * 指定タイムスタンプへ seek してフレームを取得する。`signal` または
+   * `dispose()` の abort による失敗(=`seekTo` が AbortError を reject)は
+   * 静かに `null` を返し、それ以外の失敗(デコードエラー等)はそのまま
+   * 再 throw して呼び出し元の通常のエラーフローに乗せる。
    */
   private async captureAt(
     timestampMs: number,
@@ -277,11 +305,11 @@ export class VideoSource implements FrameSource {
   ): Promise<SampledFrame | null> {
     try {
       return await this.runExclusive(async (v) => {
-        await this.seekTo(v, timestampMs / 1000, signal);
+        await this.seekTo(v, timestampMs / 1000, signal, this.disposeController.signal);
         return this.captureFrame(v, grayCtx, index, timestampMs, width, height);
       });
     } catch (error) {
-      if (signal?.aborted) {
+      if (signal?.aborted || this.disposeController.signal.aborted) {
         return null;
       }
       throw error;
@@ -308,7 +336,11 @@ export class VideoSource implements FrameSource {
 
   renderFull(frame: SampledFrame): Promise<Blob> {
     return this.runExclusive(async (video) => {
-      await this.seekTo(video, frame.timestampMs / 1000);
+      // renderFull は外部から signal を受け取らないが、ダウンロード中に
+      // 別ファイルへ切り替わって dispose() された場合は disposeController の
+      // signal を通じて seek 待ちが速やかに reject されるようにする
+      // (呼び出し元の main.ts はセッションガードで静かに後始末する)。
+      await this.seekTo(video, frame.timestampMs / 1000, undefined, this.disposeController.signal);
       const canvas = document.createElement('canvas');
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
@@ -323,6 +355,7 @@ export class VideoSource implements FrameSource {
       return;
     }
     this.disposed = true;
+    this.disposeController.abort();
 
     URL.revokeObjectURL(this.objectUrl);
 
