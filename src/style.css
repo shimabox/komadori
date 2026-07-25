@@ -445,7 +445,10 @@ button:disabled {
   align-self: flex-start;
 }
 
-.frame-thumb-wrap {
+/* スキャン完了(finalize)前は aria-disabled="true" になり、見た目上も
+   クリック可能に見えないようにする(実行時ガードだけでなく、見た目・
+   フォーカス順・支援技術のいずれからも「無効」と一貫して伝わるようにする) */
+.frame-thumb-wrap:not([aria-disabled='true']) {
   cursor: zoom-in;
 }
 

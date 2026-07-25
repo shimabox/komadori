@@ -36,10 +36,28 @@ export interface ResultsListHandle {
 interface ItemRefs {
   checkbox: HTMLInputElement;
   downloadButton: HTMLButtonElement;
+  thumbWrap: HTMLDivElement;
   thumbnailUrl: string;
 }
 
 const DEFAULT_ZIP_BUTTON_LABEL = '選択したフレームを ZIP でダウンロード';
+
+/**
+ * サムネイル(viewer を開く操作対象)の有効/無効を切り替える。
+ * スキャン完了(finalize)前は無効にし、見た目(カーソル。CSS 側で
+ * `[aria-disabled='true']` を見て制御)・フォーカス順(tabindex)・
+ * 支援技術(aria-disabled)のいずれからも一貫して「操作できない」ことが
+ * 伝わるようにする。実行時の viewerReady ガードとあわせて二重に守る。
+ */
+function setThumbEnabled(thumbWrap: HTMLDivElement, enabled: boolean): void {
+  if (enabled) {
+    thumbWrap.removeAttribute('aria-disabled');
+    thumbWrap.setAttribute('tabindex', '0');
+  } else {
+    thumbWrap.setAttribute('aria-disabled', 'true');
+    thumbWrap.setAttribute('tabindex', '-1');
+  }
+}
 
 function formatDisplayTimestamp(ms: number): string {
   const totalMs = Math.max(0, Math.round(ms));
@@ -128,8 +146,10 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
     const thumbWrap = document.createElement('div');
     thumbWrap.className = 'frame-thumb-wrap';
     thumbWrap.setAttribute('role', 'button');
-    thumbWrap.setAttribute('tabindex', '0');
     thumbWrap.setAttribute('aria-label', 'このフレームをビューアで開く');
+    // スキャン中(finalize 前)に追加されるサムネイルは、常に無効状態から始める
+    // (viewerReady のライフサイクルと一致させる。finalize() で有効化する)。
+    setThumbEnabled(thumbWrap, viewerReady);
     const thumbnailUrl = URL.createObjectURL(frame.thumbnail);
     const img = document.createElement('img');
     img.className = 'frame-thumb';
@@ -183,7 +203,7 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
     card.append(thumbWrap, meta);
     grid.append(card);
 
-    items.set(frame.index, { checkbox, downloadButton, thumbnailUrl });
+    items.set(frame.index, { checkbox, downloadButton, thumbWrap, thumbnailUrl });
     updateSummary();
   }
 
@@ -198,6 +218,7 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
     for (const refs of items.values()) {
       refs.checkbox.disabled = false;
       refs.downloadButton.disabled = false;
+      setThumbEnabled(refs.thumbWrap, true);
     }
     applySelection(selected);
     zipButton.disabled = items.size === 0;
