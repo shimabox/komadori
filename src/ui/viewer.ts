@@ -7,9 +7,15 @@ import type { ViewerNavDirection } from './viewerNav';
  */
 export interface ViewerFrameData {
   frameIndex: number;
-  /** 全フレーム中の位置(1始まり)。「採用のみ」トグルの状態に関わらず全件基準で表示する */
-  position: number;
-  /** 全フレーム数 */
+  /**
+   * 表示中フレームの、対象プール内での 1 始まりの位置。「採用のみ表示」OFF なら
+   * 全フレーム基準、ON なら採用フレーム基準になる(呼び出し側がどちらの基準で
+   * 算出するかを切り替える)。対象プールに現在フレームが含まれない場合
+   * (「採用のみ表示」ON で現在フレームの採用を外した場合など)は `null` になり、
+   * viewer はプレースホルダー(「–」)を表示する。
+   */
+  position: number | null;
+  /** position の分母(「採用のみ表示」OFF なら全フレーム数、ON なら採用フレーム数) */
   total: number;
   timestampMs: number;
   /** 現在表示する画像の URL(サムネイルまたはフル解像度) */
@@ -160,7 +166,7 @@ export function createViewer(callbacks: ViewerCallbacks): ViewerHandle {
     if (!current) {
       return;
     }
-    counter.textContent = `${current.position} / ${current.total}`;
+    counter.textContent = `${current.position ?? '–'} / ${current.total}`;
     timestampEl.textContent = formatDisplayTimestamp(current.timestampMs);
     image.src = current.imageUrl;
     image.alt = `${formatDisplayTimestamp(current.timestampMs)} 時点のフレーム`;

@@ -12,7 +12,7 @@ import { createResultsList } from './ui/resultsList';
 import { createSettingsPanel } from './ui/settingsPanel';
 import { createViewer } from './ui/viewer';
 import type { ViewerFrameData } from './ui/viewer';
-import { findAdjacentFrame } from './ui/viewerNav';
+import { computeViewerCounter, findAdjacentFrame } from './ui/viewerNav';
 import type { ViewerNavDirection } from './ui/viewerNav';
 
 const DEFAULT_THRESHOLD_PERCENT = 3;
@@ -374,7 +374,15 @@ function ensureFullRes(frame: SampledFrame): void {
 
 /** 現在の frames / selected / viewerAdoptedOnly から、viewer に渡す表示データを組み立てる */
 function buildViewerFrameData(frame: SampledFrame): ViewerFrameData {
-  const position = frames.findIndex((f) => f.index === frame.index) + 1;
+  // カウンタ(「n / 総数」)は「採用のみ表示」の状態に応じて基準を切り替える。
+  // OFF なら全フレーム基準、ON なら採用フレーム基準(findAdjacentFrame と同じ
+  // プール定義を使う純関数)。
+  const { position, total } = computeViewerCounter(
+    frames,
+    frame.index,
+    selected,
+    viewerAdoptedOnly,
+  );
   const hasPrev =
     findAdjacentFrame(frames, frame.index, 'prev', selected, viewerAdoptedOnly) !== null;
   const hasNext =
@@ -384,7 +392,7 @@ function buildViewerFrameData(frame: SampledFrame): ViewerFrameData {
   return {
     frameIndex: frame.index,
     position,
-    total: frames.length,
+    total,
     timestampMs: frame.timestampMs,
     imageUrl: cachedUrl ?? getViewerThumbUrl(frame),
     adopted: selected.has(frame.index),
