@@ -7,6 +7,12 @@ export interface ResultsListCallbacks {
   onDownloadOne: (frameIndex: number) => void;
   /** ZIP 一括ダウンロードボタンが押されたときに呼ばれる */
   onDownloadZip: () => void;
+  /**
+   * viewer を開く操作(サムネイルクリック、または「ビューアで見る」ボタン)が
+   * 行われたときに呼ばれる。`openerElement` は viewer を閉じた際にフォーカスを
+   * 戻すべき要素(クリックされたサムネイルやボタン)
+   */
+  onOpenViewer: (frameIndex: number, openerElement: HTMLElement) => void;
 }
 
 export interface ResultsListHandle {
@@ -58,6 +64,19 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
   const summary = document.createElement('span');
   summary.className = 'results-summary';
 
+  const viewButton = document.createElement('button');
+  viewButton.type = 'button';
+  viewButton.className = 'results-view-button';
+  viewButton.textContent = 'ビューアで見る';
+  viewButton.disabled = true;
+  viewButton.addEventListener('click', () => {
+    const firstIndex = items.keys().next().value;
+    if (firstIndex === undefined) {
+      return;
+    }
+    callbacks.onOpenViewer(firstIndex, viewButton);
+  });
+
   const zipButton = document.createElement('button');
   zipButton.type = 'button';
   zipButton.className = 'results-zip-button';
@@ -65,7 +84,7 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
   zipButton.disabled = true;
   zipButton.addEventListener('click', () => callbacks.onDownloadZip());
 
-  header.append(summary, zipButton);
+  header.append(summary, viewButton, zipButton);
 
   const grid = document.createElement('div');
   grid.className = 'results-grid';
@@ -73,6 +92,8 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
   element.append(header, grid);
 
   const items = new Map<number, ItemRefs>();
+  // サムネイルクリックでの viewer 起動はスキャン完了(finalize)後のみ有効にする
+  let viewerReady = false;
 
   function updateSummary(): void {
     let adopted = 0;
@@ -92,6 +113,8 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
     grid.replaceChildren();
     element.hidden = true;
     zipButton.disabled = true;
+    viewButton.disabled = true;
+    viewerReady = false;
     resetZipButtonLabel();
     summary.textContent = '';
   }
@@ -104,6 +127,9 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
 
     const thumbWrap = document.createElement('div');
     thumbWrap.className = 'frame-thumb-wrap';
+    thumbWrap.setAttribute('role', 'button');
+    thumbWrap.setAttribute('tabindex', '0');
+    thumbWrap.setAttribute('aria-label', 'このフレームをビューアで開く');
     const thumbnailUrl = URL.createObjectURL(frame.thumbnail);
     const img = document.createElement('img');
     img.className = 'frame-thumb';
@@ -112,6 +138,19 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
     img.src = thumbnailUrl;
     img.alt = `${formatDisplayTimestamp(frame.timestampMs)} 時点のフレーム`;
     thumbWrap.append(img);
+    const openFromThumb = (): void => {
+      if (!viewerReady) {
+        return;
+      }
+      callbacks.onOpenViewer(frame.index, thumbWrap);
+    };
+    thumbWrap.addEventListener('click', openFromThumb);
+    thumbWrap.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        openFromThumb();
+      }
+    });
 
     const meta = document.createElement('div');
     meta.className = 'frame-meta';
@@ -162,6 +201,8 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
     }
     applySelection(selected);
     zipButton.disabled = items.size === 0;
+    viewButton.disabled = items.size === 0;
+    viewerReady = items.size > 0;
   }
 
   function setZipButtonEnabled(enabled: boolean): void {

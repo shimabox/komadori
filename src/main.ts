@@ -10,6 +10,10 @@ import { createNotice } from './ui/notice';
 import { createProgressPanel } from './ui/progressPanel';
 import { createResultsList } from './ui/resultsList';
 import { createSettingsPanel } from './ui/settingsPanel';
+import { createViewer } from './ui/viewer';
+import type { ViewerFrameData } from './ui/viewer';
+import { findAdjacentFrame } from './ui/viewerNav';
+import type { ViewerNavDirection } from './ui/viewerNav';
 
 const DEFAULT_THRESHOLD_PERCENT = 3;
 const DEFAULT_INTERVAL_MS = 200;
@@ -17,6 +21,8 @@ const MAX_SAMPLES = 600;
 const LARGE_FILE_WARNING_BYTES = 500 * 1024 * 1024;
 const GIF_EXTENSION = /\.gif$/i;
 const VIDEO_EXTENSION = /\.(mp4|webm|mov|m4v|avi|mkv|ogv|ogg)$/i;
+/** viewer 用フル解像度キャッシュ(frameIndex -> objectURL)の上限件数。超過分は古い順に revoke する */
+const FULL_RES_CACHE_LIMIT = 20;
 
 type FileKind = 'gif' | 'video' | 'unknown';
 
@@ -95,6 +101,7 @@ appRoot.innerHTML = `
     <footer class="app-footer">
       <p>読み込んだファイルはサーバーに送信されません。解析・抽出はすべてこのブラウザの中だけで行われます。</p>
     </footer>
+    <div data-slot="viewer"></div>
   </div>
 `;
 
@@ -115,6 +122,24 @@ let selected = new Set<number>();
 let currentFileBaseName = 'frames';
 let abortController: AbortController | null = null;
 let currentSession = 0;
+
+// ---- viewer(ライトボックス)関連の状態 ----
+// viewer が表示中のフレームの index。閉じている間は null。
+let viewerOpenFrameIndex: number | null = null;
+// viewer 内「採用のみ表示」トグルの現在値(オーナーは main.ts。前後送りの
+// 対象決定に使うため、viewer からの通知をここへミラーする)。
+let viewerAdoptedOnly = false;
+// frameIndex -> サムネイル用 objectURL(表示直後の即時表示用。フル解像度と違い
+// 上限は設けず、ファイル切替時にまとめて revoke する)。
+const thumbUrlCache = new Map<number, string>();
+// frameIndex -> フル解像度 objectURL。上限 FULL_RES_CACHE_LIMIT 件、超過時は古い順に revoke する。
+const fullResCache = new Map<number, string>();
+// frameIndex -> 生成中の Promise(同じフレームへの renderFull 二重発行を防ぐ)。
+const fullResInFlight = new Map<number, Promise<void>>();
+// renderFull 呼び出しの直列化キュー。viewer のフル解像度生成と PNG/ZIP
+// ダウンロードが同じ FrameSource.renderFull(動画は共有 video 要素のシーク)を
+// 使うため、同時実行するとシークが混線する。全呼び出しをこの Promise 経由にする。
+let renderQueue: Promise<unknown> = Promise.resolve();
 
 // ---- UI コンポーネントの生成 ----
 const notice = createNotice();
@@ -139,12 +164,39 @@ const resultsList = createResultsList({
     } else {
       selected.delete(frameIndex);
     }
+    syncViewerDisplay();
   },
   onDownloadOne: (frameIndex) => {
     void downloadOne(frameIndex);
   },
   onDownloadZip: () => {
     void downloadZip();
+  },
+  onOpenViewer: (frameIndex, openerElement) => {
+    openViewerAt(frameIndex, openerElement);
+  },
+});
+
+const viewer = createViewer({
+  onNavigate: (direction) => navigateViewer(direction),
+  onToggleAdopt: (frameIndex, adopted) => {
+    if (adopted) {
+      selected.add(frameIndex);
+    } else {
+      selected.delete(frameIndex);
+    }
+    resultsList.applySelection(selected);
+    syncViewerDisplay();
+  },
+  onAdoptedOnlyChange: (adoptedOnly) => {
+    viewerAdoptedOnly = adoptedOnly;
+    syncViewerDisplay();
+  },
+  onDownload: (frameIndex) => {
+    void downloadOne(frameIndex);
+  },
+  onClose: () => {
+    viewerOpenFrameIndex = null;
   },
 });
 
@@ -159,6 +211,7 @@ requireSlot('notice').append(notice.element);
 requireSlot('settings').append(settingsPanel.element);
 requireSlot('progress').append(progressPanel.element);
 requireSlot('results').append(resultsList.element);
+requireSlot('viewer').append(viewer.element);
 
 // ---- しきい値の再評価(再デコードなし) ----
 function computeSelection(): Set<number> {
@@ -173,6 +226,184 @@ function applyThreshold(): void {
   }
   selected = computeSelection();
   resultsList.applySelection(selected);
+  syncViewerDisplay();
+}
+
+// ---- renderFull の直列化キュー ----
+// viewer のフル解像度生成と PNG/ZIP ダウンロードが同じ FrameSource.renderFull
+// (動画は共有 video 要素のシーク)を使うため、同時実行するとシークが混線する。
+// 呼び出し元(downloadOne / downloadZip / viewer 用の ensureFullRes)は
+// 必ずこの関数経由で renderFull を呼ぶ。
+function enqueueRenderFull(source: FrameSource, frame: SampledFrame): Promise<Blob> {
+  const run = renderQueue.then(() => source.renderFull(frame));
+  // 直前の呼び出しが失敗してもキューは止めず、次の呼び出しへ進む
+  renderQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+// ---- viewer のフル解像度キャッシュ ----
+function addToFullResCache(frameIndex: number, url: string): void {
+  fullResCache.set(frameIndex, url);
+  while (fullResCache.size > FULL_RES_CACHE_LIMIT) {
+    const oldest = fullResCache.entries().next();
+    if (oldest.done) {
+      break;
+    }
+    const [oldestIndex, oldestUrl] = oldest.value;
+    fullResCache.delete(oldestIndex);
+    URL.revokeObjectURL(oldestUrl);
+  }
+}
+
+function clearFullResCache(): void {
+  for (const url of fullResCache.values()) {
+    URL.revokeObjectURL(url);
+  }
+  fullResCache.clear();
+  fullResInFlight.clear();
+}
+
+function clearThumbUrlCache(): void {
+  for (const url of thumbUrlCache.values()) {
+    URL.revokeObjectURL(url);
+  }
+  thumbUrlCache.clear();
+}
+
+function getViewerThumbUrl(frame: SampledFrame): string {
+  let url = thumbUrlCache.get(frame.index);
+  if (!url) {
+    url = URL.createObjectURL(frame.thumbnail);
+    thumbUrlCache.set(frame.index, url);
+  }
+  return url;
+}
+
+/**
+ * 指定フレームのフル解像度が未取得・未生成中であれば、直列化キュー経由で
+ * 生成を開始する。完了時、まだそのフレームが viewer に表示中であれば
+ * (表示中フレームと生成完了フレームが一致する場合のみ)差し替える。
+ * 高速送り中に古いフレームの生成が遅れて完了しても、現在の表示を
+ * 上書きしないようにするためのトークン代わりに `viewerOpenFrameIndex` の
+ * 一致チェックを使う。
+ */
+function ensureFullRes(frame: SampledFrame): void {
+  if (fullResCache.has(frame.index) || fullResInFlight.has(frame.index)) {
+    return;
+  }
+  const source = frameSource;
+  if (!source) {
+    return;
+  }
+  const session = currentSession;
+
+  const task = enqueueRenderFull(source, frame)
+    .then((blob) => {
+      if (session !== currentSession) {
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      addToFullResCache(frame.index, url);
+      if (viewerOpenFrameIndex === frame.index && viewer.isOpen()) {
+        viewer.applyFullImage(url);
+      }
+    })
+    .catch((error) => {
+      if (session !== currentSession) {
+        return;
+      }
+      console.error(error);
+      // フル解像度の取得に失敗した場合はサムネイル表示のまま。
+      // ローディング表示だけは止めるため、表示中なら再描画する。
+      if (viewerOpenFrameIndex === frame.index && viewer.isOpen()) {
+        viewer.update(buildViewerFrameData(frame));
+      }
+    })
+    .finally(() => {
+      fullResInFlight.delete(frame.index);
+    });
+
+  fullResInFlight.set(frame.index, task);
+}
+
+/** 現在の frames / selected / viewerAdoptedOnly から、viewer に渡す表示データを組み立てる */
+function buildViewerFrameData(frame: SampledFrame): ViewerFrameData {
+  const position = frames.findIndex((f) => f.index === frame.index) + 1;
+  const hasPrev =
+    findAdjacentFrame(frames, frame.index, 'prev', selected, viewerAdoptedOnly) !== null;
+  const hasNext =
+    findAdjacentFrame(frames, frame.index, 'next', selected, viewerAdoptedOnly) !== null;
+  const cachedUrl = fullResCache.get(frame.index);
+
+  return {
+    frameIndex: frame.index,
+    position,
+    total: frames.length,
+    timestampMs: frame.timestampMs,
+    imageUrl: cachedUrl ?? getViewerThumbUrl(frame),
+    adopted: selected.has(frame.index),
+    hasPrev,
+    hasNext,
+    adoptedCount: selected.size,
+    isLoadingFull: cachedUrl === undefined && fullResInFlight.has(frame.index),
+  };
+}
+
+/** サムネイルクリック・「ビューアで見る」ボタンから viewer を開く */
+function openViewerAt(frameIndex: number, openerElement: HTMLElement): void {
+  const frame = frames.find((f) => f.index === frameIndex);
+  if (!frame) {
+    return;
+  }
+  viewerOpenFrameIndex = frame.index;
+  viewerAdoptedOnly = false;
+  ensureFullRes(frame);
+  viewer.open(buildViewerFrameData(frame), openerElement);
+}
+
+/** viewer 内の ← → ボタン/キー操作から呼ばれる */
+function navigateViewer(direction: ViewerNavDirection): void {
+  if (viewerOpenFrameIndex === null) {
+    return;
+  }
+  const next = findAdjacentFrame(
+    frames,
+    viewerOpenFrameIndex,
+    direction,
+    selected,
+    viewerAdoptedOnly,
+  );
+  if (!next) {
+    return;
+  }
+  viewerOpenFrameIndex = next.index;
+  ensureFullRes(next);
+  viewer.update(buildViewerFrameData(next));
+}
+
+/**
+ * viewer が開いている間に、しきい値変更・採用切替などで表示内容が
+ * 古くなった際に呼ぶ。viewer が閉じていれば何もしない。
+ */
+function syncViewerDisplay(): void {
+  if (viewerOpenFrameIndex === null) {
+    return;
+  }
+  const frame = frames.find((f) => f.index === viewerOpenFrameIndex);
+  if (!frame) {
+    closeViewerSilently();
+    return;
+  }
+  viewer.update(buildViewerFrameData(frame));
+}
+
+/** viewer を(閉じるコールバックを発火させずに)強制的に閉じる。ファイル切替時に使う */
+function closeViewerSilently(): void {
+  viewer.close();
+  viewerOpenFrameIndex = null;
 }
 
 // ---- ファイル読み込み・スキャン ----
@@ -191,6 +422,12 @@ async function handleFile(file: File): Promise<void> {
   frameSource = null;
   frames = [];
   selected = new Set();
+
+  // ファイル切替時は viewer を強制クローズし、フル解像度/サムネイルの
+  // objectURL キャッシュを全て revoke する(session ガードパターンを踏襲)。
+  closeViewerSilently();
+  clearFullResCache();
+  clearThumbUrlCache();
 
   notice.clear();
   resultsList.reset();
@@ -330,7 +567,7 @@ async function downloadOne(frameIndex: number): Promise<void> {
   const sequence = plan.get(frameIndex)?.sequence ?? 1;
 
   try {
-    const blob = await source.renderFull(frame);
+    const blob = await enqueueRenderFull(source, frame);
     if (session !== currentSession) {
       return;
     }
@@ -374,7 +611,7 @@ async function downloadZip(): Promise<void> {
       const { sequence, frame } = targets[i];
       resultsList.setZipButtonLabel(`生成中… (${i + 1}/${targets.length})`);
 
-      const blob = await source.renderFull(frame);
+      const blob = await enqueueRenderFull(source, frame);
       if (session !== currentSession) {
         return;
       }
