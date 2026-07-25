@@ -102,7 +102,13 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
   zipButton.disabled = true;
   zipButton.addEventListener('click', () => callbacks.onDownloadZip());
 
-  header.append(summary, viewButton, zipButton);
+  // 「ビューアで見る」と ZIP ボタンをひとつのグループにまとめ、ヘッダー右端に
+  // 寄せる(サマリは左、この2つは右、の2ブロック構成にする)。
+  const actions = document.createElement('div');
+  actions.className = 'results-actions';
+  actions.append(viewButton, zipButton);
+
+  header.append(summary, actions);
 
   const grid = document.createElement('div');
   grid.className = 'results-grid';
