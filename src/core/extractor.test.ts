@@ -28,9 +28,12 @@ describe('extractChangedFrames', () => {
   });
 
   it('しきい値未満の変化は不採用になる', () => {
-    // |0-5| = 5 はノイズフロア(10)未満なので 0 扱いになり、tileDiffPercent は 0% < 3%
-    const frames = [makeFrame(0, 0), makeFrame(1, 5)];
-    const result = extractChangedFrames(frames, 3);
+    // |0-12| = 12 はノイズフロア(10)以上なので切り捨てられず、
+    // tileDiffPercent(0, 12) = 12/255*100 ≈ 4.71% という正のスコアになる。
+    // ただし、その正のスコアがしきい値(6%)未満なので不採用になる
+    // (「常に採用する」誤実装ではこのテストは落ちる)。
+    const frames = [makeFrame(0, 0), makeFrame(1, 12)];
+    const result = extractChangedFrames(frames, 6);
     expect(result).toEqual([frames[0]]);
   });
 

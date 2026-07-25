@@ -146,7 +146,7 @@ describe('tileDiffPercent', () => {
     const b = new Uint8Array(4096).fill(0);
 
     // 8x8 タイル(64x64 グリッドを 8x8 分割)のうち、
-    // 左上から3列目・2行目のタイル(x: 24-31, y: 16-23)だけを最大差分にする。
+    // 左上から4列目・3行目のタイル(1始まり、x: 24-31, y: 16-23)だけを最大差分にする。
     const tileXStart = 24;
     const tileYStart = 16;
     for (let y = tileYStart; y < tileYStart + 8; y++) {
