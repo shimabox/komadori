@@ -234,8 +234,27 @@ function applyThreshold(): void {
 // (動画は共有 video 要素のシーク)を使うため、同時実行するとシークが混線する。
 // 呼び出し元(downloadOne / downloadZip / viewer 用の ensureFullRes)は
 // 必ずこの関数経由で renderFull を呼ぶ。
-function enqueueRenderFull(source: FrameSource, frame: SampledFrame): Promise<Blob> {
-  const run = renderQueue.then(() => source.renderFull(frame));
+//
+// `session` は呼び出し側が「積んだ時点」の currentSession を渡す。キュー内の
+// 順番が回ってきて実際に実行する直前にも session を再確認し、その間に
+// ファイルが切り替わっていたら(session !== currentSession)、旧 source の
+// renderFull は呼ばずに中断扱いで reject する。旧 source は handleFile で
+// 既に dispose 済みの可能性があり、dispose 後の renderFull 挙動は
+// FrameSource の実装依存で「速やかに失敗する」保証がないため、そもそも
+// 呼び出さないことで新セッションの呼び出しが待たされることを防ぐ。
+// reject 後は呼び出し元の既存の `session !== currentSession` ガードが
+// 静かに無視する(videoSource 等の中断エラーと同じ扱い)。
+function enqueueRenderFull(
+  source: FrameSource,
+  frame: SampledFrame,
+  session: number,
+): Promise<Blob> {
+  const run = renderQueue.then(() => {
+    if (session !== currentSession) {
+      return Promise.reject(new DOMException('セッションが切り替わりました', 'AbortError'));
+    }
+    return source.renderFull(frame);
+  });
   // 直前の呼び出しが失敗してもキューは止めず、次の呼び出しへ進む
   renderQueue = run.then(
     () => undefined,
@@ -247,14 +266,23 @@ function enqueueRenderFull(source: FrameSource, frame: SampledFrame): Promise<Bl
 // ---- viewer のフル解像度キャッシュ ----
 function addToFullResCache(frameIndex: number, url: string): void {
   fullResCache.set(frameIndex, url);
-  while (fullResCache.size > FULL_RES_CACHE_LIMIT) {
-    const oldest = fullResCache.entries().next();
-    if (oldest.done) {
+  if (fullResCache.size <= FULL_RES_CACHE_LIMIT) {
+    return;
+  }
+  // 古い順(Map の挿入順)に revoke するが、viewer が表示中のフレームだけは
+  // 追い出し対象から除外する(除外しないと、高速送りでキューに溜まった
+  // 生成タスクが後から完了した際に、いま見ている画像の URL が追い出されて
+  // しまい得るため)。表示中フレームをスキップしてもなお上限を超えていれば
+  // 次に古いものを追い出す。
+  for (const [candidateIndex, candidateUrl] of fullResCache) {
+    if (fullResCache.size <= FULL_RES_CACHE_LIMIT) {
       break;
     }
-    const [oldestIndex, oldestUrl] = oldest.value;
-    fullResCache.delete(oldestIndex);
-    URL.revokeObjectURL(oldestUrl);
+    if (candidateIndex === viewerOpenFrameIndex) {
+      continue;
+    }
+    fullResCache.delete(candidateIndex);
+    URL.revokeObjectURL(candidateUrl);
   }
 }
 
@@ -300,8 +328,19 @@ function ensureFullRes(frame: SampledFrame): void {
   }
   const session = currentSession;
 
-  const task = enqueueRenderFull(source, frame)
-    .then((blob) => {
+  // `task` は下の .then ハンドラ内から参照する(ハンドラは非同期に実行される
+  // ため、その時点では既に代入済みで安全)。ファイル切替で fullResInFlight が
+  // clearFullResCache() によって一括 clear された後、新セッションが同じ
+  // frame.index を再登録している可能性があるため、削除は「自分が登録した
+  // エントリの場合のみ」(参照の同一性で判定)行う。こうしないと、遅れて
+  // 完了した旧タスクが新エントリを誤って削除し、二重発行防止が壊れる
+  // (二重生成されると fullResCache.set の上書きで先行 URL が revoke されずに
+  // リークする)。
+  const task: Promise<void> = enqueueRenderFull(source, frame, session).then(
+    (blob) => {
+      if (fullResInFlight.get(frame.index) === task) {
+        fullResInFlight.delete(frame.index);
+      }
       if (session !== currentSession) {
         return;
       }
@@ -310,21 +349,25 @@ function ensureFullRes(frame: SampledFrame): void {
       if (viewerOpenFrameIndex === frame.index && viewer.isOpen()) {
         viewer.applyFullImage(url);
       }
-    })
-    .catch((error) => {
+    },
+    (error) => {
+      // in-flight から外してから再描画する。先に外しておかないと、
+      // buildViewerFrameData の isLoadingFull が「まだ生成中」のままになり、
+      // ローディング表示が消えなくなってしまう。
+      if (fullResInFlight.get(frame.index) === task) {
+        fullResInFlight.delete(frame.index);
+      }
       if (session !== currentSession) {
         return;
       }
       console.error(error);
-      // フル解像度の取得に失敗した場合はサムネイル表示のまま。
-      // ローディング表示だけは止めるため、表示中なら再描画する。
+      // フル解像度の取得に失敗した場合はサムネイル表示のまま。次回このフレームを
+      // 表示した際は(fullResInFlight にエントリが残っていないため)再試行される。
       if (viewerOpenFrameIndex === frame.index && viewer.isOpen()) {
         viewer.update(buildViewerFrameData(frame));
       }
-    })
-    .finally(() => {
-      fullResInFlight.delete(frame.index);
-    });
+    },
+  );
 
   fullResInFlight.set(frame.index, task);
 }
@@ -397,6 +440,10 @@ function syncViewerDisplay(): void {
     closeViewerSilently();
     return;
   }
+  // 表示中フレームのフル解像度キャッシュが(上限による追い出し等で)無い
+  // 状態でここに来ても、フル解像度へ復帰できるようにする。既にキャッシュ
+  // 済み・生成中であれば ensureFullRes 内でそのまま no-op になる。
+  ensureFullRes(frame);
   viewer.update(buildViewerFrameData(frame));
 }
 
@@ -567,7 +614,7 @@ async function downloadOne(frameIndex: number): Promise<void> {
   const sequence = plan.get(frameIndex)?.sequence ?? 1;
 
   try {
-    const blob = await enqueueRenderFull(source, frame);
+    const blob = await enqueueRenderFull(source, frame, session);
     if (session !== currentSession) {
       return;
     }
@@ -611,7 +658,7 @@ async function downloadZip(): Promise<void> {
       const { sequence, frame } = targets[i];
       resultsList.setZipButtonLabel(`生成中… (${i + 1}/${targets.length})`);
 
-      const blob = await enqueueRenderFull(source, frame);
+      const blob = await enqueueRenderFull(source, frame, session);
       if (session !== currentSession) {
         return;
       }
