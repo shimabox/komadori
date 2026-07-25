@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { diffPercent, GRAY_GRID_SIZE, toGray64, type ImageDataLike } from './diff';
+import {
+  diffPercent,
+  GRAY_GRID_SIZE,
+  NOISE_FLOOR,
+  tileDiffPercent,
+  toGray64,
+  type ImageDataLike,
+} from './diff';
 
 /** 単色で塗りつぶした ImageDataLike を作る */
 function makeSolidImage(
@@ -117,5 +124,79 @@ describe('diffPercent', () => {
       b[i] = 255;
     }
     expect(diffPercent(a, b)).toBeCloseTo(50, 5);
+  });
+});
+
+describe('tileDiffPercent', () => {
+  it('(a) 同一入力なら差分は 0% になる', () => {
+    const a = new Uint8Array(4096).fill(123);
+    const b = new Uint8Array(4096).fill(123);
+    expect(tileDiffPercent(a, b)).toBe(0);
+  });
+
+  it('(b) 全画素が同量変化する(グローバルな変化)場合、diffPercent と同等のスコアになる', () => {
+    const a = new Uint8Array(4096).fill(0);
+    const b = new Uint8Array(4096).fill(51); // 51/255 = 20%
+    expect(tileDiffPercent(a, b)).toBeCloseTo(20, 5);
+    expect(tileDiffPercent(a, b)).toBeCloseTo(diffPercent(a, b), 5);
+  });
+
+  it('(c) 1タイル内のみの局所変化は、全体平均に薄められず高スコアになる', () => {
+    const a = new Uint8Array(4096).fill(0);
+    const b = new Uint8Array(4096).fill(0);
+
+    // 8x8 タイル(64x64 グリッドを 8x8 分割)のうち、
+    // 左上から3列目・2行目のタイル(x: 24-31, y: 16-23)だけを最大差分にする。
+    const tileXStart = 24;
+    const tileYStart = 16;
+    for (let y = tileYStart; y < tileYStart + 8; y++) {
+      for (let x = tileXStart; x < tileXStart + 8; x++) {
+        b[y * GRAY_GRID_SIZE + x] = 255;
+      }
+    }
+
+    const tileScore = tileDiffPercent(a, b);
+    const globalScore = diffPercent(a, b);
+
+    // 変化した画素は 4096 画素中 64 画素だけなので、全体平均では大きく薄められる
+    // (64*255/4096/255*100 = 1.5625%)。タイル分割ならその局所タイルの平均差分が
+    // そのまま最大値として出るため 100% になる。
+    expect(globalScore).toBeCloseTo(1.5625, 4);
+    expect(tileScore).toBe(100);
+    expect(tileScore).toBeGreaterThan(globalScore);
+  });
+
+  it('(d) ノイズフロア未満の微小差はスコア 0 になる', () => {
+    const a = new Uint8Array(4096).fill(100);
+
+    // NOISE_FLOOR(10) ちょうど未満(絶対差9)は 0 として切り捨てられる
+    const bBelowFloor = new Uint8Array(4096).fill(100 + (NOISE_FLOOR - 1));
+    expect(tileDiffPercent(a, bBelowFloor)).toBe(0);
+
+    // NOISE_FLOOR ちょうど(絶対差10)は切り捨てられず有効な差分として扱われる
+    const bAtFloor = new Uint8Array(4096).fill(100 + NOISE_FLOOR);
+    expect(tileDiffPercent(a, bAtFloor)).toBeCloseTo((NOISE_FLOOR / 255) * 100, 5);
+  });
+
+  it('(e) 長さが一致しない配列を渡しても例外を投げず、有限の値を返す', () => {
+    const a = new Uint8Array(4096).fill(200);
+    const shortB = new Uint8Array(2048).fill(0);
+
+    let result = 0;
+    expect(() => {
+      result = tileDiffPercent(a, shortB);
+    }).not.toThrow();
+    expect(Number.isFinite(result)).toBe(true);
+    expect(result).toBeGreaterThanOrEqual(0);
+    expect(result).toBeLessThanOrEqual(100);
+  });
+
+  it('(e) 空配列同士なら差分は 0 になる', () => {
+    expect(tileDiffPercent(new Uint8Array(0), new Uint8Array(0))).toBe(0);
+  });
+
+  it('(e) 片方が空配列の場合も例外を投げず 0 を返す', () => {
+    const a = new Uint8Array(4096).fill(200);
+    expect(tileDiffPercent(a, new Uint8Array(0))).toBe(0);
   });
 });
