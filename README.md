@@ -15,7 +15,7 @@
 
 ## クイックスタート
 
-Node.js v20.19.5以降を想定しています。
+Node.js v20.19.5以降を想定しています([mise](https://mise.jdx.dev/)を使っている場合は`mise install`で入ります)。
 
 ```bash
 npm install

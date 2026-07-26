@@ -1,6 +1,10 @@
 # 開発ガイド
 
-Node.js v20.19.5以降を想定しています。
+Node.js v20.19.5以降を想定しています。[mise](https://mise.jdx.dev/)を使っている場合は、リポジトリ直下で以下を実行すると`mise.toml`に基づいて必要なNodeがインストールされます。
+
+```bash
+mise install
+```
 
 ```bash
 npm install
