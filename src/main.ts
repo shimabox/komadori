@@ -88,7 +88,7 @@ appRoot.innerHTML = `
     <header class="app-header">
       <h1 class="app-title">komadori</h1>
       <p class="app-tagline">
-        動画・GIF の「変化点」フレームだけを検出して静止画として抽出・ダウンロードします。
+        動画・GIF の「変化点」フレームだけを検出し、静止画として抽出・ダウンロードします。
       </p>
     </header>
     <main class="app-main">
