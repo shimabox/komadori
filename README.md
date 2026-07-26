@@ -1,10 +1,10 @@
 # komadori
 
-komadori is a client-side web app that detects "change point" frames in videos and GIFs and lets you export them as PNG images (individually or as a ZIP). Everything runs in your browser — no files are ever uploaded. Try it at **https://komadori.orukubami.sh** — documentation below is in Japanese.
+komadori is a client-side web app that detects "change point" frames in videos and GIFs and lets you export them as PNG images (individually or as a ZIP). Everything runs in your browser, and no files are ever uploaded. Try it at **https://komadori.orukubami.sh** (documentation below is in Japanese).
 
 動画やGIFから「変化点」フレームだけを検出し、静止画(PNG)として抽出・ダウンロードできるWebアプリです。読み込みから変化点の検出、ZIP生成まで、すべてブラウザの中だけで完結します。ファイルはどこにも送信されません。
 
-**👉 https://komadori.orukubami.sh** — インストール不要でそのまま使えます。
+**https://komadori.orukubami.sh** をブラウザで開くだけで、インストール不要で使えます。
 
 <img src="docs/images/screenshot-main.png" alt="komadoriのスクリーンショット。スライド動画を読み込み、変化点のフレームだけが採用された結果一覧" width="600">
 
@@ -32,6 +32,8 @@ npm run dev
 
 ## ドキュメント
 
-- [使い方ガイド](docs/usage.md) — 画面の操作、フレームビューア、設定項目、注意事項
-- [仕組み](docs/architecture.md) — 変化点検出アルゴリズムと内部設計
-- [開発ガイド](docs/development.md) — npm scripts、技術構成、ディレクトリ構成
+詳細は`docs/`以下にあります。
+
+- 画面の操作、フレームビューア、設定項目、注意事項は[使い方ガイド](docs/usage.md)へ
+- 変化点検出アルゴリズムと内部設計は[仕組み](docs/architecture.md)へ
+- npm scripts、技術構成、ディレクトリ構成は[開発ガイド](docs/development.md)へ
