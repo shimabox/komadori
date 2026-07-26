@@ -32,8 +32,6 @@ npm run dev
 
 ## ドキュメント
 
-詳細は`docs/`以下にあります。
-
-- 画面の操作、フレームビューア、設定項目、注意事項は[使い方ガイド](docs/usage.md)へ
-- 変化点検出アルゴリズムと内部設計は[仕組み](docs/architecture.md)へ
-- npm scripts、技術構成、ディレクトリ構成は[開発ガイド](docs/development.md)へ
+- [使い方ガイド](docs/usage.md) — 画面の操作、フレームビューア、設定項目、注意事項
+- [仕組み](docs/architecture.md) — 変化点検出アルゴリズムと内部設計
+- [開発ガイド](docs/development.md) — npm scripts、技術構成、ディレクトリ構成

@@ -25,7 +25,9 @@ npm install
 
 - [Vite](https://vite.dev/) + TypeScript(フレームワークなしのVanilla構成)
 - [Vitest](https://vitest.dev/)によるユニットテスト(`src/core/*.test.ts`)
-- ランタイム依存は、GIFデコード用の[`gifuct-js`](https://github.com/matt-way/gifuct-js)とZIP生成用の[`fflate`](https://github.com/101arrowz/fflate)の2つのみです。
+- ランタイム依存は以下の2つのみです。
+  - [`gifuct-js`](https://github.com/matt-way/gifuct-js) — GIFのデコード
+  - [`fflate`](https://github.com/101arrowz/fflate) — ZIPファイルの生成
 
 ## ディレクトリ構成
 
