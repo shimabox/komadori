@@ -1,0 +1,8 @@
+node_modules
+dist
+package-lock.json
+
+# 計画ファイル・レビュー用アーティファクト(untracked, commit 対象外)は整形しない
+docs
+.playwright-mcp
+acceptance-ui.png

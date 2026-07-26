@@ -1,0 +1,654 @@
+:root {
+  color-scheme: light dark;
+
+  --color-bg: #f5f6f8;
+  --color-surface: #ffffff;
+  --color-border: #d9dce1;
+  --color-text: #1a1d23;
+  --color-text-muted: #5b6270;
+  --color-accent: #0f7c8c;
+  --color-accent-strong: #0b5c68;
+  --color-accent-contrast: #ffffff;
+  --color-danger: #b3261e;
+  --color-danger-bg: #fbeae9;
+  --color-warning: #8a5a00;
+  --color-warning-bg: #fdf3dc;
+  --color-info: #1a4b8c;
+  --color-info-bg: #e8f0fc;
+  --shadow-card: 0 1px 2px rgba(20, 22, 28, 0.06), 0 1px 1px rgba(20, 22, 28, 0.04);
+  --radius: 10px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #14161a;
+    --color-surface: #1d2026;
+    --color-border: #33373f;
+    --color-text: #eef0f3;
+    --color-text-muted: #9aa1ac;
+    --color-accent: #37c2d6;
+    --color-accent-strong: #6adcec;
+    --color-accent-contrast: #06222a;
+    --color-danger: #ff8a80;
+    --color-danger-bg: #3a1f1e;
+    --color-warning: #f2c14e;
+    --color-warning-bg: #3a2f11;
+    --color-info: #8ab4f8;
+    --color-info-bg: #1c2b40;
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35), 0 1px 1px rgba(0, 0, 0, 0.3);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/*
+ * 一部のパネル(.progress-panel, .results-panel 等)は `display: flex` を
+ * 指定しつつ JS 側で `hidden` 属性による表示/非表示切り替えも行う。
+ * `[hidden] { display: none }` は UA スタイルシート由来のため、同じ
+ * 詳細度の author スタイル(`display: flex` 等)に負けて上書きされてしまう。
+ * ここで author スタイルとして明示的に強制することで、hidden 属性が
+ * 常に見た目にも反映されるようにする。
+ */
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family:
+    'Hiragino Sans',
+    'Hiragino Kaku Gothic ProN',
+    'Yu Gothic',
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+}
+
+.app-shell {
+  width: 100%;
+  max-width: 880px;
+  padding: 32px 20px 64px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.app-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.app-title {
+  margin: 0;
+  font-size: 1.75rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--color-text);
+}
+
+.app-tagline {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.95rem;
+}
+
+.app-main {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.app-footer {
+  margin-top: 12px;
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.app-footer p {
+  margin: 0;
+}
+
+/* ---- 共通パネル ---- */
+.dropzone,
+.settings-panel,
+.progress-panel,
+.results-panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+}
+
+/* ---- ドロップゾーン ---- */
+.dropzone {
+  padding: 36px 24px;
+  text-align: center;
+  cursor: pointer;
+  border: 2px dashed var(--color-border);
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.dropzone:hover,
+.dropzone:focus-visible {
+  border-color: var(--color-accent);
+}
+
+.dropzone:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.dropzone--dragover {
+  border-color: var(--color-accent);
+  background-color: color-mix(in srgb, var(--color-accent) 8%, var(--color-surface));
+}
+
+.dropzone-message {
+  margin: 0 0 6px;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.dropzone-hint {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.82rem;
+}
+
+.dropzone-filename {
+  margin: 12px 0 0;
+  font-size: 0.85rem;
+  color: var(--color-accent-strong);
+  word-break: break-all;
+}
+
+.dropzone-filename:empty {
+  display: none;
+}
+
+/* ---- 通知エリア ---- */
+.notice-area {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.notice-area:empty {
+  display: none;
+}
+
+.notice {
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  font-size: 0.88rem;
+  border: 1px solid transparent;
+}
+
+.notice--error {
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+  border-color: color-mix(in srgb, var(--color-danger) 30%, transparent);
+}
+
+.notice--warning {
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+  border-color: color-mix(in srgb, var(--color-warning) 30%, transparent);
+}
+
+.notice--info {
+  background: var(--color-info-bg);
+  color: var(--color-info);
+  border-color: color-mix(in srgb, var(--color-info) 30%, transparent);
+}
+
+/* ---- 設定パネル ---- */
+.settings-panel {
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.settings-heading {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.settings-label {
+  min-width: 200px;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.settings-value {
+  color: var(--color-accent-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-row input[type='range'] {
+  flex: 1 1 220px;
+  accent-color: var(--color-accent);
+}
+
+.settings-row input[type='number'] {
+  width: 100px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: 0.92rem;
+}
+
+.settings-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
+.settings-panel input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---- 進捗パネル ---- */
+.progress-panel {
+  padding: 18px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.progress-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--color-border);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--color-accent);
+  transition: width 0.2s ease;
+}
+
+.progress-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.progress-text {
+  font-size: 0.88rem;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- ボタン共通 ---- */
+button {
+  font: inherit;
+  cursor: pointer;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  padding: 8px 14px;
+  transition:
+    background-color 0.15s ease,
+    opacity 0.15s ease;
+}
+
+button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.progress-cancel,
+.results-zip-button {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-accent-contrast);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.progress-cancel:hover:not(:disabled),
+.results-zip-button:hover:not(:disabled) {
+  background: var(--color-accent-strong);
+  border-color: var(--color-accent-strong);
+}
+
+/* ---- 結果一覧 ---- */
+.results-panel {
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.results-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* 「ビューアで見る」+ ZIP ボタンのグループ。ヘッダー内ではサマリとの
+   space-between で右端に寄る */
+.results-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.results-summary {
+  font-size: 0.9rem;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.results-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 14px;
+}
+
+.frame-card {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--color-bg);
+  display: flex;
+  flex-direction: column;
+}
+
+.frame-thumb-wrap {
+  aspect-ratio: 16 / 9;
+  background: repeating-conic-gradient(
+    color-mix(in srgb, var(--color-border) 40%, transparent) 0% 25%,
+    transparent 0% 50%
+  );
+  background-size: 16px 16px;
+  overflow: hidden;
+}
+
+.frame-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.frame-meta {
+  padding: 8px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.frame-timestamp {
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.frame-adopt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.frame-adopt input {
+  accent-color: var(--color-accent);
+}
+
+.frame-download {
+  font-size: 0.8rem;
+  padding: 5px 10px;
+  align-self: flex-start;
+}
+
+/* スキャン完了(finalize)前は aria-disabled="true" になり、見た目上も
+   クリック可能に見えないようにする(実行時ガードだけでなく、見た目・
+   フォーカス順・支援技術のいずれからも「無効」と一貫して伝わるようにする) */
+.frame-thumb-wrap:not([aria-disabled='true']) {
+  cursor: zoom-in;
+}
+
+.results-view-button {
+  white-space: nowrap;
+}
+
+/* ---- フレームビューア(ライトボックス) ---- */
+.viewer-overlay {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, black 72%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 100;
+}
+
+.viewer-dialog {
+  width: 100%;
+  max-width: 960px;
+  max-height: 100%;
+  background: var(--color-surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 20px 20px;
+  overflow: hidden;
+}
+
+.viewer-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.viewer-counter {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.viewer-adopted-only {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.viewer-adopted-only input {
+  accent-color: var(--color-accent);
+}
+
+.viewer-adopted-only-hint {
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
+.viewer-close {
+  margin-left: auto;
+}
+
+.viewer-body {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 0;
+}
+
+.viewer-nav-button {
+  flex: 0 0 auto;
+  font-size: 1.2rem;
+  line-height: 1;
+  padding: 10px 14px;
+}
+
+.viewer-image-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: repeating-conic-gradient(
+    color-mix(in srgb, var(--color-border) 40%, transparent) 0% 25%,
+    transparent 0% 50%
+  );
+  background-size: 16px 16px;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.viewer-image {
+  max-width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
+  display: block;
+}
+
+.viewer-loading-hint {
+  position: absolute;
+  bottom: 8px;
+  right: 10px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, black 55%, transparent);
+  color: #fff;
+  font-size: 0.72rem;
+}
+
+.viewer-footer {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.viewer-timestamp {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.viewer-adopt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.viewer-adopt input {
+  accent-color: var(--color-accent);
+}
+
+.viewer-download {
+  margin-left: auto;
+}
+
+@media (max-width: 480px) {
+  .app-shell {
+    padding: 20px 12px 48px;
+  }
+
+  .settings-label {
+    min-width: 0;
+  }
+
+  .results-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .results-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .results-actions button {
+    width: 100%;
+  }
+
+  .viewer-dialog {
+    padding: 12px 14px 16px;
+  }
+
+  .viewer-header {
+    gap: 10px;
+  }
+
+  .viewer-close {
+    margin-left: 0;
+  }
+
+  .viewer-nav-button {
+    padding: 8px 10px;
+  }
+
+  .viewer-footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .viewer-download {
+    margin-left: 0;
+  }
+}
