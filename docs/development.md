@@ -33,15 +33,15 @@ npm install
 
 ```
 src/
-  main.ts              — エントリポイント。UIとcoreの配線
-  ui/                  — DOM構築・イベント(入力エリア、設定パネル、進捗、結果一覧、ビューア)
-    viewerNav.ts       — ビューアの前後送り対象決定(「採用のみ」フィルタ考慮、純関数)
+  main.ts              # エントリポイント。UIとcoreの配線
+  ui/                  # DOM構築・イベント(入力エリア、設定パネル、進捗、結果一覧、ビューア)
+    viewerNav.ts       # ビューアの前後送り対象決定(「採用のみ」フィルタ考慮、純関数)
   core/
-    types.ts           — SampledFrame等の型定義
-    frameSource.ts     — フレーム供給の共通インターフェース
-    videoSource.ts     — <video> + seek + canvasで動画からフレーム列を生成
-    gifSource.ts       — gifuct-jsでGIFをデコードしフレーム列を生成
-    diff.ts            — 縮小グレースケール化とフレーム間差分率の計算(純関数)
-    extractor.ts       — 差分系列としきい値から採用フレームを決定・再抽出(純ロジック)
-    zip.ts             — 採用フレームのPNG化とZIP生成(fflate)
+    types.ts           # SampledFrame等の型定義
+    frameSource.ts     # フレーム供給の共通インターフェース
+    videoSource.ts     # <video> + seek + canvasで動画からフレーム列を生成
+    gifSource.ts       # gifuct-jsでGIFをデコードしフレーム列を生成
+    diff.ts            # 縮小グレースケール化とフレーム間差分率の計算(純関数)
+    extractor.ts       # 差分系列としきい値から採用フレームを決定・再抽出(純ロジック)
+    zip.ts             # 採用フレームのPNG化とZIP生成(fflate)
 ```
