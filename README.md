@@ -1,5 +1,7 @@
 # komadori
 
+komadori is a client-side web app that detects "change point" frames in videos and GIFs and lets you export them as PNG images (individually or as a ZIP). Everything runs in your browser — no files are ever uploaded. Documentation below is in Japanese.
+
 動画やGIFから「変化点」フレームだけを検出し、静止画(PNG)として抽出・ダウンロードできるWebアプリです。読み込みから変化点の検出、ZIP生成まで、すべてブラウザの中だけで完結します。ファイルはどこにも送信されません。
 
 <img src="docs/images/screenshot-main.png" alt="komadoriのスクリーンショット。スライド動画を読み込み、変化点のフレームだけが採用された結果一覧" width="600">
