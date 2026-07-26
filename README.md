@@ -4,7 +4,7 @@ komadori is a client-side web app that detects "change point" frames in videos a
 
 動画やGIFから「変化点」フレームだけを検出し、静止画(PNG)として抽出・ダウンロードできるWebアプリです。読み込みから変化点の検出、ZIP生成まで、すべてブラウザの中だけで完結します。ファイルはどこにも送信されません。
 
-**https://komadori.orukubami.sh** をブラウザで開くだけで、インストール不要で使えます。
+**https://komadori.orukubami.sh**
 
 <img src="docs/images/screenshot-main.png" alt="komadoriのスクリーンショット。スライド動画を読み込み、変化点のフレームだけが採用された結果一覧" width="600">
 
