@@ -41,7 +41,7 @@ export function createSettingsPanel(
 
   const thresholdLabel = document.createElement('label');
   thresholdLabel.className = 'settings-label';
-  thresholdLabel.setAttribute('for', 'bunkatsu-threshold-slider');
+  thresholdLabel.setAttribute('for', 'komadori-threshold-slider');
 
   const thresholdValueEl = document.createElement('span');
   thresholdValueEl.className = 'settings-value';
@@ -50,7 +50,7 @@ export function createSettingsPanel(
 
   const thresholdSlider = document.createElement('input');
   thresholdSlider.type = 'range';
-  thresholdSlider.id = 'bunkatsu-threshold-slider';
+  thresholdSlider.id = 'komadori-threshold-slider';
   thresholdSlider.min = String(MIN_THRESHOLD_PERCENT);
   thresholdSlider.max = String(MAX_THRESHOLD_PERCENT);
   thresholdSlider.step = String(THRESHOLD_STEP);
@@ -75,12 +75,12 @@ export function createSettingsPanel(
 
   const intervalLabel = document.createElement('label');
   intervalLabel.className = 'settings-label';
-  intervalLabel.setAttribute('for', 'bunkatsu-interval-input');
+  intervalLabel.setAttribute('for', 'komadori-interval-input');
   intervalLabel.textContent = 'サンプリング間隔(ミリ秒)';
 
   const intervalInput = document.createElement('input');
   intervalInput.type = 'number';
-  intervalInput.id = 'bunkatsu-interval-input';
+  intervalInput.id = 'komadori-interval-input';
   intervalInput.min = String(MIN_INTERVAL_MS);
   intervalInput.step = String(INTERVAL_STEP);
   intervalInput.value = String(initial.intervalMs);

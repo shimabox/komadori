@@ -86,7 +86,7 @@ const appRoot: HTMLDivElement = appRootMaybe;
 appRoot.innerHTML = `
   <div class="app-shell">
     <header class="app-header">
-      <h1 class="app-title">bunkatsu</h1>
+      <h1 class="app-title">komadori</h1>
       <p class="app-tagline">
         動画・GIF の「変化点」フレームだけを検出して静止画として抽出・ダウンロードします。
       </p>
