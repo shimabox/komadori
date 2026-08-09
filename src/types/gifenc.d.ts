@@ -53,6 +53,23 @@ declare module 'gifenc' {
     initialCapacity?: number;
   }
 
+  /**
+   * `gif.stream` が公開する内部ストリーム API。README には
+   * `writeByte`/`writeBytes` のみ記載されているが、実体(dist/gifenc.esm.js
+   * の `F()`)は `bytesView()`/`reset()` も持つ。フレームごとの分割出力
+   * (gifExport.ts の `createGifChunkWriter`)で、`gif.reset()` ではなく
+   * こちらの `reset()`(書き込みカーソルのみを戻す)を使うために必要な範囲
+   * だけ宣言する。
+   */
+  export interface GifencStream {
+    /** 内部バッファへの直接ビュー(コピーなし)を返す */
+    bytesView(): Uint8Array<ArrayBuffer>;
+    /** 書き込みカーソルだけを0へ戻す(ヘッダ書き込み済みフラグには触れない) */
+    reset(): void;
+    writeByte(value: number): void;
+    writeBytes(bytes: Uint8Array, offset?: number, byteLength?: number): void;
+  }
+
   export interface GIFEncoderInstance {
     writeFrame(index: Uint8Array, width: number, height: number, options?: WriteFrameOptions): void;
     finish(): void;
@@ -65,6 +82,8 @@ declare module 'gifenc' {
     writeHeader(): void;
     reset(): void;
     readonly buffer: ArrayBuffer;
+    /** 内部ストリームサブ API。`gif.reset()` とは異なる「巻き戻し」の粒度を持つ */
+    readonly stream: GifencStream;
   }
 
   export function GIFEncoder(options?: GIFEncoderOptions): GIFEncoderInstance;

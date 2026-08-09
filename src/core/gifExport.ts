@@ -1,7 +1,14 @@
 import { applyPalette, GIFEncoder, quantize } from 'gifenc';
+import type { GifencColor, GifencColorFormat, WriteFrameOptions } from 'gifenc';
 
-/** quantize / applyPalette に渡す色フォーマット。両者で必ず同じ値を使う必要がある */
-const QUANTIZE_FORMAT = 'rgb565';
+/** 不透明フレームの quantize / applyPalette フォーマット。両者で必ず同じ値を使う必要がある */
+const OPAQUE_FORMAT: GifencColorFormat = 'rgb565';
+/**
+ * 透明画素を含むフレームの quantize / applyPalette フォーマット。
+ * GIF が持てる透過は1ビット(不透明/透明の2値)だけなので、量子化時は
+ * `oneBitAlpha: true` と組み合わせて使う。
+ */
+const TRANSPARENT_FORMAT: GifencColorFormat = 'rgba4444';
 
 export interface GifEncodeOptions {
   /** 出力の最大幅(px)。null はフル解像度(縮小しない) */
@@ -50,6 +57,99 @@ export function computeGifSize(
 }
 
 /**
+ * RGBA ピクセル列を1回走査し、アルファが 255 未満(完全不透明でない)の画素が
+ * 1つでもあるかを判定する。動画由来のフレームはほぼ常に false になり、
+ * 透過 GIF 由来のフレームだけ true になる。
+ */
+export function hasTransparentPixel(rgba: Uint8ClampedArray | Uint8Array): boolean {
+  for (let i = 3; i < rgba.length; i += 4) {
+    if (rgba[i] < 255) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 量子化後のパレットから、アルファが 0(完全透明)の最初のエントリの
+ * インデックスを探す。RGB(3要素)のパレットや、アルファ0のエントリが
+ * 存在しない場合は null を返す(呼び出し側は透過なしにフォールバックする)。
+ */
+export function findTransparentPaletteIndex(palette: GifencColor[]): number | null {
+  for (let i = 0; i < palette.length; i++) {
+    const color = palette[i];
+    if (color.length === 4 && color[3] === 0) {
+      return i;
+    }
+  }
+  return null;
+}
+
+/**
+ * canvas や ImageBitmap に触れない、GIF ストリームの低レベル書き込み口。
+ * インデックス化済みのビットマップとパレットだけを受け取り、フレームを
+ * 書き込むたびに直後の内部バッファを Blob チャンクへ吐き出してカーソルを
+ * 巻き戻す。これにより gifenc の内部バッファが GIF 全体を溜め込むことを防ぐ
+ * (詳細は writeFrame 内のコメントを参照)。
+ *
+ * canvas に依存しないため、gifExport.test.ts から直接呼び出して
+ * 一括版(GIFEncoder に全フレーム書いてから bytesView を1回取る)との
+ * 出力バイト一致を検証する回帰テストに使う目的でエクスポートしている。
+ */
+export function createGifChunkWriter(): {
+  writeFrame(indexed: Uint8Array, width: number, height: number, opts: WriteFrameOptions): void;
+  finish(): Blob;
+} {
+  const gif = GIFEncoder();
+  const chunks: Blob[] = [];
+
+  function flush(): void {
+    // bytesView() は内部バッファへの直接ビュー(コピーなし)だが、
+    // new Blob([...]) に渡した時点で Blob コンストラクタが同期的に
+    // バイト列をコピーするため、この直後に stream.reset() で内部バッファの
+    // カーソルを巻き戻して使い回しても、既に積んだ Blob チャンクの内容は
+    // 保持される。
+    chunks.push(new Blob([gif.stream.bytesView()]));
+  }
+
+  function writeFrame(
+    indexed: Uint8Array,
+    width: number,
+    height: number,
+    opts: WriteFrameOptions,
+  ): void {
+    gif.writeFrame(indexed, width, height, opts);
+    flush();
+    // gif.reset() ではなく gif.stream.reset() を使う。
+    //
+    // gif.reset() は内部ストリームのカーソルを巻き戻すだけでなく、GIFEncoder
+    // 自身が持つ「ヘッダ(ロジカルスクリーン記述子・グローバルカラーテーブル)
+    // を書き込み済み」という内部フラグまでリセットしてしまう。そのため次に
+    // writeFrame を呼んだときに auto モードが再び先頭フレーム扱いとなり、
+    // ヘッダとグローバルカラーテーブルを2回目以降のフレームにも書き込んで
+    // しまい、GIF として壊れたバイト列になる。
+    //
+    // 一方 gif.stream.reset()(gif.stream が公開する、内部バッファを持つ
+    // stream サブオブジェクトの reset)は書き込みカーソルだけを0に戻し、
+    // 上記の「ヘッダ書き込み済み」フラグには触れない。そのため2フレーム目
+    // 以降も通常どおりフレームデータだけが追記される。gif.stream は README
+    // に公開 API として存在は明記されているが、この reset の使い分けは
+    // README に明記されていない準内部的な挙動のため、gifExport.test.ts の
+    // 回帰テスト(一括版と分割版の出力バイト完全一致)で gifenc の
+    // バージョンアップ時にも検知できるようガードしている。
+    gif.stream.reset();
+  }
+
+  function finish(): Blob {
+    gif.finish();
+    flush();
+    return new Blob(chunks, { type: 'image/gif' });
+  }
+
+  return { writeFrame, finish };
+}
+
+/**
  * 採用フレームの PNG を1枚ずつ受け取り、1本のアニメーション GIF へ逐次エンコードする。
  *
  * GIF の論理画面サイズは全フレーム共通である必要があるため、描画用 canvas と
@@ -58,9 +158,11 @@ export function computeGifSize(
  * (GIF ソースのフレームごとに寸法が異なるケースは想定していない)。
  * フル解像度 PNG をまとめてメモリに保持しなくて済むよう、呼び出し元
  * (main.ts の downloadGif)が1フレームずつ渡す前提の設計にしている。
+ * GIF ストリーム自体の書き込みも `createGifChunkWriter` を介して行うため、
+ * gifenc の内部バッファに GIF 全体を溜め込むこともない。
  */
 export function createGifEncoder(opts: GifEncodeOptions): GifEncoderHandle {
-  const gif = GIFEncoder();
+  const writer = createGifChunkWriter();
   // canvas・出力サイズは最初のフレームで確定させ、以降は使い回す
   let canvas: HTMLCanvasElement | null = null;
   let ctx: CanvasRenderingContext2D | null = null;
@@ -82,14 +184,35 @@ export function createGifEncoder(opts: GifEncodeOptions): GifEncoderHandle {
       ctx.drawImage(bitmap, 0, 0, size.width, size.height);
       const imageData = ctx.getImageData(0, 0, size.width, size.height);
 
-      const palette = quantize(imageData.data, opts.maxColors, { format: QUANTIZE_FORMAT });
-      const index = applyPalette(imageData.data, palette, QUANTIZE_FORMAT);
+      // 透明画素を1つでも含む場合(透過 GIF 由来の入力)だけ rgba4444 +
+      // oneBitAlpha に切り替える。透明画素がない場合(動画入力はほぼ常に
+      // こちら)は従来どおり rgb565 で量子化し、画質は変えない。
+      const transparent = hasTransparentPixel(imageData.data);
+      const format = transparent ? TRANSPARENT_FORMAT : OPAQUE_FORMAT;
+      const palette = quantize(imageData.data, opts.maxColors, {
+        format,
+        ...(transparent ? { oneBitAlpha: true } : {}),
+      });
+      const index = applyPalette(imageData.data, palette, format);
 
-      gif.writeFrame(index, size.width, size.height, {
+      // 透明画素があってもパレット側にアルファ0のエントリが残らなかった
+      // 場合は、透過なしとして扱う(処理を落とさないフォールバック)。
+      const transparentIndex = transparent ? findTransparentPaletteIndex(palette) : null;
+
+      writer.writeFrame(index, size.width, size.height, {
         palette,
         delay: delayMs,
         // 無限ループにするための repeat は先頭フレームにのみ指定する
         ...(frameCount === 0 ? { repeat: 0 } : {}),
+        ...(transparentIndex !== null
+          ? {
+              transparent: true,
+              transparentIndex,
+              // 透明部分から前フレームの絵が透けて見えないよう、透過フレームでは
+              // 背景色に戻す(disposalType 2 相当)を指定する。
+              dispose: 2,
+            }
+          : {}),
       });
       frameCount += 1;
     } finally {
@@ -98,8 +221,7 @@ export function createGifEncoder(opts: GifEncodeOptions): GifEncoderHandle {
   }
 
   function finish(): Blob {
-    gif.finish();
-    return new Blob([gif.bytesView()], { type: 'image/gif' });
+    return writer.finish();
   }
 
   return { addFrame, finish };
