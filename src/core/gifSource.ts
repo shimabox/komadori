@@ -487,6 +487,15 @@ export class GifSource implements FrameSource {
    * アクションを、このフレームを描く前に適用する」設計になっているため、
    * `compositeState` を呼び出しをまたいで引き継ぐ限り、途中から合成を
    * 再開しても最初から合成した場合と同じ結果になる。
+   *
+   * `renderedUpTo` は「canvas に実際に反映済みのインデックス」を表す値
+   * として扱い、canvas の実状態と常に一致させる。そのため合成ループの
+   * 一括代入(ループ後にまとめて更新)はせず、1フレーム適用するたびに
+   * 更新する。こうしておくことで、`applyFrameToCanvas` が例外を投げて
+   * ループが途中で止まっても、次回の呼び出しは「実際に反映済みの
+   * 範囲」の続きから正しく再開できる(ループ後の一括代入だと、canvas は
+   * 途中まで進んでいるのに `renderedUpTo` は古い値のままになり、次回
+   * 既に適用済みのフレームを二重に適用して合成結果が壊れてしまう)。
    */
   async renderFull(frame: SampledFrame): Promise<Blob> {
     const originalIndex = this.sampleToOriginalIndex[frame.index] ?? 0;
@@ -507,6 +516,11 @@ export class GifSource implements FrameSource {
     if (plan.reset) {
       this.compositeCtx.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
       this.compositeState = { pendingClearRect: null, pendingRestoreSnapshot: null };
+      // canvas と DisposalState は既にリセット後の(=未合成の)状態になった
+      // ため、renderedUpTo もここで一旦 null に戻しておく。これを怠ると、
+      // 直後の合成ループで例外が起きたときに「canvas は空にリセットされて
+      // いるのに renderedUpTo は古い値のまま」という食い違いが生まれる。
+      this.renderedUpTo = null;
     }
 
     for (let i = plan.from; i <= targetIndex; i++) {
@@ -517,8 +531,10 @@ export class GifSource implements FrameSource {
         this.decodedFrames[i],
         this.compositeState,
       );
+      // canvas の実状態と renderedUpTo を常に一致させるため、1フレーム
+      // 適用するたびに更新する(詳細は上のメソッド doc コメントを参照)。
+      this.renderedUpTo = i;
     }
-    this.renderedUpTo = targetIndex;
 
     return canvasToBlob(this.compositeCanvas, 'image/png');
   }

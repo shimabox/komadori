@@ -102,6 +102,8 @@ export function createGifChunkWriter(): {
 } {
   const gif = GIFEncoder();
   const chunks: Blob[] = [];
+  // finish() 済みかどうかと、その結果の Blob(finish() を冪等にするために保持する)。
+  let finishedBlob: Blob | null = null;
 
   function flush(): void {
     // bytesView() は内部バッファへの直接ビュー(コピーなし)だが、
@@ -118,6 +120,13 @@ export function createGifChunkWriter(): {
     height: number,
     opts: WriteFrameOptions,
   ): void {
+    if (finishedBlob) {
+      // finish() 後の writeFrame() は呼び出し側のバグである(トレーラーを
+      // 書いた後に追記しても壊れた GIF にしかならない)。黙って無視して
+      // 気付かれないまま壊れた出力を返すより、ここで例外にして早期に
+      // 検知できるようにする。
+      throw new Error('createGifChunkWriter: finish() 後に writeFrame() を呼ぶことはできません');
+    }
     gif.writeFrame(indexed, width, height, opts);
     flush();
     // gif.reset() ではなく gif.stream.reset() を使う。
@@ -141,9 +150,18 @@ export function createGifChunkWriter(): {
   }
 
   function finish(): Blob {
+    // finish() は冪等にする。2回目以降に gif.finish() を再度呼ぶと、
+    // トレーラーがもう一度書き込まれ、その時点の(既に空になっている)
+    // stream の中身が新しいチャンクとして chunks に重複して積まれてしまい、
+    // 壊れた Blob が返ってしまう。そのため初回に生成した Blob を保持して
+    // おき、2回目以降は同じ Blob をそのまま返す。
+    if (finishedBlob) {
+      return finishedBlob;
+    }
     gif.finish();
     flush();
-    return new Blob(chunks, { type: 'image/gif' });
+    finishedBlob = new Blob(chunks, { type: 'image/gif' });
+    return finishedBlob;
   }
 
   return { writeFrame, finish };
@@ -204,15 +222,20 @@ export function createGifEncoder(opts: GifEncodeOptions): GifEncoderHandle {
         delay: delayMs,
         // 無限ループにするための repeat は先頭フレームにのみ指定する
         ...(frameCount === 0 ? { repeat: 0 } : {}),
-        ...(transparentIndex !== null
-          ? {
-              transparent: true,
-              transparentIndex,
-              // 透明部分から前フレームの絵が透けて見えないよう、透過フレームでは
-              // 背景色に戻す(disposalType 2 相当)を指定する。
-              dispose: 2,
-            }
-          : {}),
+        // dispose は「このフレームを表示した"後"」の後始末を指定するオプションで、
+        // 効果が現れるのは次フレームの描画前である。そのため「透過を使う
+        // フレーム自身」に付けても意味がない。例えば不透明なフレームNの次に
+        // 透過フレームN+1が来た場合、透過が効くかどうかを左右するのは
+        // フレームNのdisposeであり、フレームN+1のdisposeはさらに次(N+2)の
+        // ためのものである。透過フレームだけにdisposeを付けると、直前が
+        // 不透明フレームだったケースでN+1の透明部分にNの絵が残ってしまう。
+        //
+        // このエンコーダは各フレームで毎回 canvas 全面を描画し直しており
+        // 部分描画はしないため、不透明フレームに dispose: 2(背景色に戻す)を
+        // 指定しても見た目は変わらない(次フレームが全面を上書きするため)。
+        // よって透過の有無に関わらず、常に dispose: 2 を指定する。
+        dispose: 2,
+        ...(transparentIndex !== null ? { transparent: true, transparentIndex } : {}),
       });
       frameCount += 1;
     } finally {

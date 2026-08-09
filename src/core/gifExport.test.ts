@@ -166,3 +166,31 @@ describe('GIF チャンク分割出力の回帰テスト', () => {
     expect(Array.from(chunked)).toEqual(Array.from(bulk));
   });
 });
+
+describe('createGifChunkWriter.finish() の冪等性', () => {
+  const width = 2;
+  const height = 2;
+  const palette: [number, number, number][] = [
+    [255, 0, 0],
+    [0, 255, 0],
+  ];
+  const frame = new Uint8Array([0, 1, 1, 0]);
+
+  it('finish() を2回呼んでも同じバイト列が返る', async () => {
+    const writer = createGifChunkWriter();
+    writer.writeFrame(frame, width, height, { palette, delay: 100, repeat: 0 });
+
+    const first = new Uint8Array(await writer.finish().arrayBuffer());
+    const second = new Uint8Array(await writer.finish().arrayBuffer());
+
+    expect(Array.from(second)).toEqual(Array.from(first));
+  });
+
+  it('finish() 後に writeFrame() を呼ぶと例外を投げる', () => {
+    const writer = createGifChunkWriter();
+    writer.writeFrame(frame, width, height, { palette, delay: 100, repeat: 0 });
+    writer.finish();
+
+    expect(() => writer.writeFrame(frame, width, height, { delay: 100 })).toThrow();
+  });
+});
