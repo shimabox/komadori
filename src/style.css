@@ -243,6 +243,17 @@ body {
   letter-spacing: 0.04em;
 }
 
+/* GIF出力設定群を、しきい値・サンプリング間隔などのスキャン設定群と
+   視覚的に区別するための小見出し */
+.settings-subheading {
+  margin: 4px 0 0;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--color-text-muted);
+  border-top: 1px solid var(--color-border);
+  padding-top: 14px;
+}
+
 .settings-row {
   display: flex;
   align-items: center;
@@ -266,7 +277,8 @@ body {
   accent-color: var(--color-accent);
 }
 
-.settings-row input[type='number'] {
+.settings-row input[type='number'],
+.settings-row select {
   width: 100px;
   padding: 6px 8px;
   border-radius: 6px;
@@ -282,7 +294,8 @@ body {
   color: var(--color-text-muted);
 }
 
-.settings-panel input:disabled {
+.settings-panel input:disabled,
+.settings-panel select:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -346,7 +359,8 @@ button:disabled {
 }
 
 .progress-cancel,
-.results-zip-button {
+.results-zip-button,
+.results-gif-button {
   background: var(--color-accent);
   border-color: var(--color-accent);
   color: var(--color-accent-contrast);
@@ -355,7 +369,8 @@ button:disabled {
 }
 
 .progress-cancel:hover:not(:disabled),
-.results-zip-button:hover:not(:disabled) {
+.results-zip-button:hover:not(:disabled),
+.results-gif-button:hover:not(:disabled) {
   background: var(--color-accent-strong);
   border-color: var(--color-accent-strong);
 }
@@ -376,7 +391,7 @@ button:disabled {
   flex-wrap: wrap;
 }
 
-/* 「ビューアで見る」+ ZIP ボタンのグループ。ヘッダー内ではサマリとの
+/* 「ビューアで見る」+ ZIP + GIF ボタンのグループ。ヘッダー内ではサマリとの
    space-between で右端に寄る */
 .results-actions {
   display: flex;

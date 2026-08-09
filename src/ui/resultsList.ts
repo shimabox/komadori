@@ -7,6 +7,8 @@ export interface ResultsListCallbacks {
   onDownloadOne: (frameIndex: number) => void;
   /** ZIP 一括ダウンロードボタンが押されたときに呼ばれる */
   onDownloadZip: () => void;
+  /** GIF ダウンロードボタンが押されたときに呼ばれる */
+  onDownloadGif: () => void;
   /**
    * viewer を開く操作(サムネイルクリック、または「ビューアで見る」ボタン)が
    * 行われたときに呼ばれる。`openerElement` は viewer を閉じた際にフォーカスを
@@ -31,6 +33,12 @@ export interface ResultsListHandle {
   setZipButtonLabel(label: string): void;
   /** ZIP ボタンのラベルを既定のものに戻す */
   resetZipButtonLabel(): void;
+  /** GIF ボタンの有効/無効を切り替える */
+  setGifButtonEnabled(enabled: boolean): void;
+  /** GIF ボタンのラベルを一時的に変更する(生成中の進捗表示用) */
+  setGifButtonLabel(label: string): void;
+  /** GIF ボタンのラベルを既定のものに戻す */
+  resetGifButtonLabel(): void;
 }
 
 interface ItemRefs {
@@ -41,6 +49,7 @@ interface ItemRefs {
 }
 
 const DEFAULT_ZIP_BUTTON_LABEL = '選択したフレームを ZIP でダウンロード';
+const DEFAULT_GIF_BUTTON_LABEL = '選択したフレームを GIF でダウンロード';
 
 /**
  * サムネイル(viewer を開く操作対象)の有効/無効を切り替える。
@@ -102,11 +111,18 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
   zipButton.disabled = true;
   zipButton.addEventListener('click', () => callbacks.onDownloadZip());
 
-  // 「ビューアで見る」と ZIP ボタンをひとつのグループにまとめ、ヘッダー右端に
-  // 寄せる(サマリは左、この2つは右、の2ブロック構成にする)。
+  const gifButton = document.createElement('button');
+  gifButton.type = 'button';
+  gifButton.className = 'results-gif-button';
+  gifButton.textContent = DEFAULT_GIF_BUTTON_LABEL;
+  gifButton.disabled = true;
+  gifButton.addEventListener('click', () => callbacks.onDownloadGif());
+
+  // 「ビューアで見る」・ZIP・GIF ボタンをひとつのグループにまとめ、ヘッダー右端に
+  // 寄せる(サマリは左、この3つは右、の2ブロック構成にする)。
   const actions = document.createElement('div');
   actions.className = 'results-actions';
-  actions.append(viewButton, zipButton);
+  actions.append(viewButton, zipButton, gifButton);
 
   header.append(summary, actions);
 
@@ -137,9 +153,11 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
     grid.replaceChildren();
     element.hidden = true;
     zipButton.disabled = true;
+    gifButton.disabled = true;
     viewButton.disabled = true;
     viewerReady = false;
     resetZipButtonLabel();
+    resetGifButtonLabel();
     summary.textContent = '';
   }
 
@@ -228,6 +246,7 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
     }
     applySelection(selected);
     zipButton.disabled = items.size === 0;
+    gifButton.disabled = items.size === 0;
     viewButton.disabled = items.size === 0;
     viewerReady = items.size > 0;
   }
@@ -244,6 +263,18 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
     zipButton.textContent = DEFAULT_ZIP_BUTTON_LABEL;
   }
 
+  function setGifButtonEnabled(enabled: boolean): void {
+    gifButton.disabled = !enabled;
+  }
+
+  function setGifButtonLabel(label: string): void {
+    gifButton.textContent = label;
+  }
+
+  function resetGifButtonLabel(): void {
+    gifButton.textContent = DEFAULT_GIF_BUTTON_LABEL;
+  }
+
   return {
     element,
     reset,
@@ -253,5 +284,8 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
     setZipButtonEnabled,
     setZipButtonLabel,
     resetZipButtonLabel,
+    setGifButtonEnabled,
+    setGifButtonLabel,
+    resetGifButtonLabel,
   };
 }

@@ -15,6 +15,7 @@ komadori is a client-side web app that detects "change point" frames in videos a
 - しきい値スライダーを動かすと、再デコードなしでその場で採用結果を再計算
 - フレームビューアで拡大確認しながら採用/除外を調整
 - 採用フレームを個別PNGまたはまとめてZIPでダウンロード
+- 採用フレームを1本のアニメーションGIFとしてまとめて書き出し
 - 完全クライアントサイド。ファイルはサーバーに送信されません
 
 ## 使い方

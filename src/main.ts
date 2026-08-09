@@ -1,6 +1,7 @@
 import './style.css';
 import { extractChangedFrames } from './core/extractor';
 import type { FrameSource } from './core/frameSource';
+import { createGifEncoder } from './core/gifExport';
 import { GifSource } from './core/gifSource';
 import type { SampledFrame } from './core/types';
 import { VideoSource } from './core/videoSource';
@@ -171,6 +172,9 @@ const resultsList = createResultsList({
   },
   onDownloadZip: () => {
     void downloadZip();
+  },
+  onDownloadGif: () => {
+    void downloadGif();
   },
   onOpenViewer: (frameIndex, openerElement) => {
     openViewerAt(frameIndex, openerElement);
@@ -698,6 +702,75 @@ async function downloadZip(): Promise<void> {
     if (session === currentSession) {
       resultsList.resetZipButtonLabel();
       resultsList.setZipButtonEnabled(true);
+    }
+  }
+}
+
+async function downloadGif(): Promise<void> {
+  // downloadZip 同様、開始時点の session とファイル名を束縛する。GIF 名は
+  // 完了時点のグローバル状態(切り替わっているかもしれない)ではなく、
+  // ここで束縛した baseName を使う。
+  const session = currentSession;
+  const baseName = currentFileBaseName;
+  const source = frameSource;
+  if (!source) {
+    return;
+  }
+  if (selected.size === 0) {
+    notice.add('warning', 'ダウンロード対象のフレームが選択されていません。');
+    return;
+  }
+
+  const plan = buildDownloadPlan(selected);
+  const targets = Array.from(plan.values());
+  const { delayMs, maxWidth, maxColors } = settingsPanel.getGifOptions();
+  const encoder = createGifEncoder({ maxWidth, maxColors });
+
+  resultsList.setGifButtonEnabled(false);
+
+  try {
+    for (let i = 0; i < targets.length; i++) {
+      if (session !== currentSession) {
+        return;
+      }
+
+      const { frame } = targets[i];
+      resultsList.setGifButtonLabel(`生成中… (${i + 1}/${targets.length})`);
+
+      const blob = await enqueueRenderFull(source, frame, session);
+      if (session !== currentSession) {
+        return;
+      }
+
+      // フル解像度 PNG をまとめて溜め込まず、1枚取得するたびに縮小・量子化して
+      // エンコーダへ渡す(gifExport 側の設計。メモリ使用量を抑えるため)。
+      await encoder.addFrame(blob, delayMs);
+    }
+
+    if (session !== currentSession) {
+      return;
+    }
+    resultsList.setGifButtonLabel('GIF を書き出しています…');
+
+    const gifBlob = encoder.finish();
+    if (session !== currentSession) {
+      return;
+    }
+
+    triggerBlobDownload(gifBlob, `${baseName}_frames.gif`);
+  } catch (error) {
+    if (session !== currentSession) {
+      return;
+    }
+    console.error(error);
+    notice.add('error', 'GIF の生成に失敗しました。');
+  } finally {
+    // 新セッション側の GIF ボタンは handleFile 冒頭の resultsList.reset() /
+    // finalize() が初期化・復元する前提なので、旧セッションの後始末で
+    // 新しい画面の状態を上書きしないようにする。
+    if (session === currentSession) {
+      resultsList.resetGifButtonLabel();
+      resultsList.setGifButtonEnabled(true);
     }
   }
 }
