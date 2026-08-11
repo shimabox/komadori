@@ -396,26 +396,17 @@ button:disabled {
 .results-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   flex-wrap: wrap;
 }
 
-/* ボタンが3つに増えたことで、既定の余白のままだと最大幅(パネル内側 790px)に
-   対して合計 805px となり、GIF ボタンだけが2段目に落ちて不揃いに見えていた。
-   この行のボタンだけ少しコンパクトにして1行に収める(3つまとめて同じ寸法に
-   するので、行内で文字サイズが混ざることはない)。ラベル自体は改行させたく
-   ないため nowrap を明示する。 */
-.results-actions button {
-  font-size: 0.94rem;
-  padding: 8px 12px;
-  white-space: nowrap;
-}
-
-/* 折り返しが避けられない幅では、ZIP と GIF を各行いっぱいに伸ばして
+/* ラベルは短くしてあるので通常幅では1行に収まる。ウィンドウが狭くて
+   折り返しが避けられない場合だけ、ZIP と GIF を各行いっぱいに伸ばして
    「入りきらなかった結果の不揃いな2段」ではなく意図した積み重ねに見せる */
 .results-zip-button,
 .results-gif-button {
   flex: 1 1 auto;
+  white-space: nowrap;
 }
 
 .results-summary {

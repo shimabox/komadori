@@ -48,8 +48,11 @@ interface ItemRefs {
   thumbnailUrl: string;
 }
 
-const DEFAULT_ZIP_BUTTON_LABEL = '選択したフレームを ZIP でダウンロード';
-const DEFAULT_GIF_BUTTON_LABEL = '選択したフレームを GIF でダウンロード';
+// 何を対象にするかは、すぐ隣のサマリ(「n 件中 m 件を採用中」)が示しているため、
+// ラベル側で「選択したフレームを」まで繰り返さない。3つのボタンを1行に収める
+// ためでもある(長いラベルのままだと合計幅がパネル内側を超えて折り返す)。
+const DEFAULT_ZIP_BUTTON_LABEL = 'ZIP でダウンロード';
+const DEFAULT_GIF_BUTTON_LABEL = 'GIF でダウンロード';
 
 /**
  * サムネイル(viewer を開く操作対象)の有効/無効を切り替える。
