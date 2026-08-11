@@ -44,4 +44,7 @@ src/
     diff.ts            # 縮小グレースケール化とフレーム間差分率の計算(純関数)
     extractor.ts       # 差分系列としきい値から採用フレームを決定・再抽出(純ロジック)
     zip.ts             # 採用フレームのPNG化とZIP生成(fflate)
+    gifExport.ts       # 採用フレームのアニメーションGIF化(gifenc)
+  types/
+    gifenc.d.ts        # gifencの型定義(本体に同梱されていないため自前で宣言)
 ```
