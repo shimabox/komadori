@@ -181,6 +181,29 @@ function applyFrameToCanvas(
   // 0 または 1 の場合は何もしない(前フレームの描画結果をそのまま残す)。
 }
 
+/**
+ * GifSource の合成済みインデックス(`renderedUpTo`)と目標インデックスから、
+ * 「先頭からリセットして合成し直す必要があるか」と「どのインデックスから
+ * 合成を再開すべきか」を返す純粋関数。
+ *
+ * - 未合成(renderedUpTo が null)、または目標が合成済みより前(ビューアで
+ *   遡った場合など)は、canvas と DisposalState を巻き戻して 0 から合成し直す
+ *   必要があるため `{ reset: true, from: 0 }` を返す
+ * - 目標が合成済み以上(同じ場合を含む)なら、続きから合成すれば足りるため
+ *   `{ reset: false, from: renderedUpTo + 1 }` を返す。目標が合成済みと同じ
+ *   場合は `from > targetIndex` となり、呼び出し側のループが1回も回らない
+ *   ことで「再合成不要」を自然に表現する
+ */
+export function planCompositeRange(
+  renderedUpTo: number | null,
+  targetIndex: number,
+): { reset: boolean; from: number } {
+  if (renderedUpTo === null || targetIndex < renderedUpTo) {
+    return { reset: true, from: 0 };
+  }
+  return { reset: false, from: renderedUpTo + 1 };
+}
+
 /** デコード後のフレーム数が maxSamples を超える場合に、均等間引きした添字配列を返す */
 function pickEvenIndices(total: number, maxSamples: number): number[] {
   if (total <= maxSamples) {
@@ -232,8 +255,45 @@ export class GifSource implements FrameSource {
   private sampleToOriginalIndex: number[] = [];
   private disposed = false;
 
+  // ---- renderFull の逐次合成状態 ----
+  // renderFull は呼ばれるたびに 0 から合成し直していたため、対象フレームが
+  // n 枚あると合成回数の合計が概ね O(n^2) になっていた。直前までの合成結果を
+  // canvas ごとインスタンスに永続化し、続きから合成できるようにする。
+  //
+  // renderFull は src/main.ts の enqueueRenderFull によって
+  // downloadOne / downloadZip / ビューアの ensureFullRes の
+  // 全経路で直列化されており、同時に2つの renderFull が走ることはない。
+  // そのため、この合成用 canvas を複数呼び出しで使い回しても競合しない
+  // (直列化が崩れると、ここで保持する canvas / DisposalState / renderedUpTo
+  // への読み書きが競合しうるため、この前提が崩れる変更をする場合は要注意)。
+  /** 合成先 canvas(renderFull 間で使い回す) */
+  private compositeCanvas: HTMLCanvasElement | null = null;
+  private compositeCtx: CanvasRenderingContext2D | null = null;
+  /** drawPatch が使う patch 用の作業 canvas(renderFull 間で使い回す) */
+  private compositePatchCanvas: HTMLCanvasElement | null = null;
+  private compositePatchCtx: CanvasRenderingContext2D | null = null;
+  /** 前フレームの disposalType による保留アクション(合成の続きを正しく行うために引き継ぐ) */
+  private compositeState: DisposalState = { pendingClearRect: null, pendingRestoreSnapshot: null };
+  /** decodedFrames のうち、どの元インデックスまで合成済みか(未合成なら null) */
+  private renderedUpTo: number | null = null;
+
   constructor(file: File) {
     this.file = file;
+  }
+
+  /**
+   * renderFull の逐次合成状態を破棄し、次回呼び出しで先頭から合成し直す
+   * ようにする。scan() が新たに走って decodedFrames が作り直されるとき
+   * (合成済みインデックスの意味が変わってしまうため)と、dispose() で
+   * 呼ぶ。
+   */
+  private resetCompositeState(): void {
+    this.compositeCanvas = null;
+    this.compositeCtx = null;
+    this.compositePatchCanvas = null;
+    this.compositePatchCtx = null;
+    this.compositeState = { pendingClearRect: null, pendingRestoreSnapshot: null };
+    this.renderedUpTo = null;
   }
 
   private async ensureParsed(): Promise<RawImageFrame[]> {
@@ -332,6 +392,10 @@ export class GifSource implements FrameSource {
       const state: DisposalState = { pendingClearRect: null, pendingRestoreSnapshot: null };
       this.decodedFrames = [];
       this.sampleToOriginalIndex = [];
+      // decodedFrames を作り直すため、以前の renderFull 合成状態
+      // (renderedUpTo が指す先が古い decodedFrames のインデックスになって
+      // しまう)は無効になる。ここでリセットしておく。
+      this.resetCompositeState();
 
       let elapsedMs = 0;
       let sampled = 0;
@@ -410,24 +474,69 @@ export class GifSource implements FrameSource {
     }
   }
 
+  /**
+   * 対象フレームまでを合成した canvas から PNG を生成する。
+   *
+   * 二乗時間を避けるため、前回までの合成結果(compositeCanvas /
+   * compositeState / renderedUpTo)を使い回し、`planCompositeRange` が
+   * 返す範囲だけを追加合成する。目標インデックスが合成済みより前の
+   * 場合(ビューアで遡った場合など)だけ、canvas と DisposalState を
+   * リセットして 0 から合成し直す。
+   *
+   * `applyFrameToCanvas` は「前フレームの disposalType による保留
+   * アクションを、このフレームを描く前に適用する」設計になっているため、
+   * `compositeState` を呼び出しをまたいで引き継ぐ限り、途中から合成を
+   * 再開しても最初から合成した場合と同じ結果になる。
+   *
+   * `renderedUpTo` は「canvas に実際に反映済みのインデックス」を表す値
+   * として扱い、canvas の実状態と常に一致させる。そのため合成ループの
+   * 一括代入(ループ後にまとめて更新)はせず、1フレーム適用するたびに
+   * 更新する。こうしておくことで、`applyFrameToCanvas` が例外を投げて
+   * ループが途中で止まっても、次回の呼び出しは「実際に反映済みの
+   * 範囲」の続きから正しく再開できる(ループ後の一括代入だと、canvas は
+   * 途中まで進んでいるのに `renderedUpTo` は古い値のままになり、次回
+   * 既に適用済みのフレームを二重に適用して合成結果が壊れてしまう)。
+   */
   async renderFull(frame: SampledFrame): Promise<Blob> {
     const originalIndex = this.sampleToOriginalIndex[frame.index] ?? 0;
+    const targetIndex = Math.min(originalIndex, this.decodedFrames.length - 1);
 
-    const canvas = document.createElement('canvas');
-    canvas.width = this.canvasWidth;
-    canvas.height = this.canvasHeight;
-    const ctx = requireContext(canvas, true);
-
-    const patchCanvas = document.createElement('canvas');
-    const patchCtx = requireContext(patchCanvas);
-
-    const state: DisposalState = { pendingClearRect: null, pendingRestoreSnapshot: null };
-    const lastIndex = Math.min(originalIndex, this.decodedFrames.length - 1);
-    for (let i = 0; i <= lastIndex; i++) {
-      applyFrameToCanvas(ctx, patchCanvas, patchCtx, this.decodedFrames[i], state);
+    if (!this.compositeCanvas || !this.compositeCtx) {
+      this.compositeCanvas = document.createElement('canvas');
+      this.compositeCanvas.width = this.canvasWidth;
+      this.compositeCanvas.height = this.canvasHeight;
+      this.compositeCtx = requireContext(this.compositeCanvas, true);
+    }
+    if (!this.compositePatchCanvas || !this.compositePatchCtx) {
+      this.compositePatchCanvas = document.createElement('canvas');
+      this.compositePatchCtx = requireContext(this.compositePatchCanvas);
     }
 
-    return canvasToBlob(canvas, 'image/png');
+    const plan = planCompositeRange(this.renderedUpTo, targetIndex);
+    if (plan.reset) {
+      this.compositeCtx.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
+      this.compositeState = { pendingClearRect: null, pendingRestoreSnapshot: null };
+      // canvas と DisposalState は既にリセット後の(=未合成の)状態になった
+      // ため、renderedUpTo もここで一旦 null に戻しておく。これを怠ると、
+      // 直後の合成ループで例外が起きたときに「canvas は空にリセットされて
+      // いるのに renderedUpTo は古い値のまま」という食い違いが生まれる。
+      this.renderedUpTo = null;
+    }
+
+    for (let i = plan.from; i <= targetIndex; i++) {
+      applyFrameToCanvas(
+        this.compositeCtx,
+        this.compositePatchCanvas,
+        this.compositePatchCtx,
+        this.decodedFrames[i],
+        this.compositeState,
+      );
+      // canvas の実状態と renderedUpTo を常に一致させるため、1フレーム
+      // 適用するたびに更新する(詳細は上のメソッド doc コメントを参照)。
+      this.renderedUpTo = i;
+    }
+
+    return canvasToBlob(this.compositeCanvas, 'image/png');
   }
 
   dispose(): void {
@@ -438,6 +547,7 @@ export class GifSource implements FrameSource {
     this.rawFrames = null;
     this.decodePromise = null;
     this.decodedFrames = [];
+    this.resetCompositeState();
     // scan() を経由していない(呼ばれる前・呼ばれていない)場合の
     // 保険として、ここでも世代を進めておく。通常経路では scan() の
     // finally が既に進めているため無害な重複インクリメントになる。
