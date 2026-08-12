@@ -276,6 +276,16 @@ body {
   font-size: 0.92rem;
 }
 
+/* 「この間隔で再スキャン」ボタン。しきい値のような即時反映ではなく明示的な
+   操作が必要であることを示す導線だが、.results-zip-button 等の主要操作より
+   目立たせず、設定パネルの中では控えめな扱いにする(枠線のみで背景色は
+   付けない)。 */
+.settings-rescan-button {
+  font-size: 0.85rem;
+  padding: 6px 12px;
+  white-space: nowrap;
+}
+
 .settings-hint {
   margin: 0;
   font-size: 0.78rem;

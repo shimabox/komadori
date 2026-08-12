@@ -8,6 +8,7 @@ import { createZip } from './core/zip';
 import { createDropzone } from './ui/dropzone';
 import { createNotice } from './ui/notice';
 import { createProgressPanel } from './ui/progressPanel';
+import { shouldEnableRescan } from './ui/rescan';
 import { createResultsList } from './ui/resultsList';
 import { createSettingsPanel } from './ui/settingsPanel';
 import { createViewer } from './ui/viewer';
@@ -122,6 +123,17 @@ let selected = new Set<number>();
 let currentFileBaseName = 'frames';
 let abortController: AbortController | null = null;
 let currentSession = 0;
+// 再スキャン用に保持するファイル本体。対応形式であることが確定してから
+// (detectFileKind() が 'unknown' でないと分かってから)代入する。非対応形式で
+// 早期return するパスでは代入しないことで、無効なファイルを再スキャン対象として
+// 抱えないようにする。
+let currentFile: File | null = null;
+// スキャン開始時に「指定した」サンプリング間隔(settingsPanel.getIntervalMs() の
+// 戻り値をそのまま記録する)。MAX_SAMPLES の制約で実際に使われる間隔(実効値)は
+// これより広くなることがあるが、再スキャン要否の判定は必ず指定値同士で比較する
+// (実効値と比較すると、スキャン直後で何も変えていないのにボタンが有効になって
+// しまうため)。未スキャンの間は null。
+let scannedIntervalMs: number | null = null;
 
 // ---- viewer(ライトボックス)関連の状態 ----
 // viewer が表示中のフレームの index。閉じている間は null。
@@ -148,6 +160,12 @@ const settingsPanel = createSettingsPanel(
   { thresholdPercent: DEFAULT_THRESHOLD_PERCENT, intervalMs: DEFAULT_INTERVAL_MS },
   {
     onThresholdChange: () => applyThreshold(),
+    onIntervalChange: () => updateRescanState(),
+    onRescan: () => {
+      if (currentFile) {
+        void handleFile(currentFile);
+      }
+    },
   },
 );
 
@@ -227,6 +245,35 @@ function applyThreshold(): void {
   selected = computeSelection();
   resultsList.applySelection(selected);
   syncViewerDisplay();
+}
+
+/**
+ * サンプリング間隔の設定が`file`に対して意味を持つかどうかを返す。
+ * GifSourceはサンプリング間隔を参照せず、全フレームを対象にmaxSamplesで
+ * 均等間引きするだけ(この既存のGIFスキャン挙動は変更しない)。動画
+ * (VideoSource)だけがこの設定を使うため、GIFに対しては間隔を変えて
+ * 再スキャンしても結果が変わらない。ファイル未読み込み(null)は
+ * 「意味を持つ」扱いにしておく(初期状態のヒント文・判定に影響しないため)。
+ */
+function isIntervalApplicable(file: File | null): boolean {
+  return file === null || detectFileKind(file) !== 'gif';
+}
+
+// ---- 再スキャンボタンの有効/無効の反映 ----
+// 間隔入力の変更時・スキャン完了時(および早期returnで終わった場合)に呼び、
+// 実態(currentFile の有無、直前にスキャンした指定間隔、現在の入力値、
+// GIFかどうか)から shouldEnableRescan() で有効/無効を判定して settingsPanel
+// へ反映する。スキャン中の一時的な無効化は settingsPanel.setDisabled() が
+// 別途担当するため、ここでは「スキャンしていない前提での本来あるべき状態」
+// だけを渡せばよい。
+function updateRescanState(): void {
+  const enabled = shouldEnableRescan(
+    currentFile !== null,
+    scannedIntervalMs,
+    settingsPanel.getIntervalMs(),
+    isIntervalApplicable(currentFile),
+  );
+  settingsPanel.setRescanEnabled(enabled);
 }
 
 // ---- renderFull の直列化キュー ----
@@ -478,6 +525,18 @@ async function handleFile(file: File): Promise<void> {
   frames = [];
   selected = new Set();
 
+  // currentFile / scannedIntervalMs もここで一旦クリアする。対応形式であることが
+  // 確定してから(下の detectFileKind() のチェック後に)currentFile を
+  // 再設定するため、非対応形式で早期returnした場合はここでのクリアが最終状態
+  // となり、無効なファイル(あるいは前回選択していた別ファイル)が再スキャン
+  // 対象として残り続けることはない。
+  currentFile = null;
+  scannedIntervalMs = null;
+  // ファイル種別が確定するまでは「間隔が意味を持つ」デフォルト状態に戻して
+  // おく(GIF固有のヒント文が、無関係な次のファイルに引き継がれないように
+  // するため)。対応形式と確定した時点で、下で改めて実際の種別に合わせて設定し直す。
+  settingsPanel.setIntervalApplicable(true);
+
   // ファイル切替時は viewer を強制クローズし、フル解像度/サムネイルの
   // objectURL キャッシュを全て revoke する(session ガードパターンを踏襲)。
   closeViewerSilently();
@@ -504,8 +563,20 @@ async function handleFile(file: File): Promise<void> {
       'error',
       '対応していないファイル形式です。動画(mp4 / webm / mov など)または GIF ファイルを選択してください。',
     );
+    // currentFile は上で既に null にクリア済み(対応形式と確定できなかった
+    // ため代入しない)。設定パネル側の再スキャンボタンの見た目も
+    // 「ファイル未読み込み」の状態へ合わせておく。
+    updateRescanState();
     return;
   }
+
+  // ここまで来て初めて「対応形式のファイル」と確定するので、再スキャン用に保持する。
+  currentFile = file;
+  // GifSourceはサンプリング間隔を参照しない(全フレームを対象にmaxSamplesで
+  // 均等間引きするだけ)ため、GIFの場合はヒント文と再スキャン可否判定の
+  // 両方に「この設定は使われない」ことを伝える。間隔入力欄自体は無効化しない
+  // (動画を読み込む前提で先に値だけ変えておきたいケースがあるため)。
+  settingsPanel.setIntervalApplicable(kind !== 'gif');
 
   const source: FrameSource = kind === 'gif' ? new GifSource(file) : new VideoSource(file);
   frameSource = source;
@@ -519,8 +590,16 @@ async function handleFile(file: File): Promise<void> {
   let scanFailed = false;
 
   try {
+    // ここで取得した値(指定値)をそのまま scannedIntervalMs として記録する。
+    // MAX_SAMPLES の上限により source.scan() 内部で実際に使われる間隔(実効値)は
+    // これより広がることがあるが、再スキャン要否の判定は必ず「指定値」同士で
+    // 比較する(実効値と比較すると、スキャン直後で何も変えていないのに
+    // 再スキャンボタンが有効になってしまうため)。
+    const intervalMs = settingsPanel.getIntervalMs();
+    scannedIntervalMs = intervalMs;
+
     const scanOptions = {
-      intervalMs: settingsPanel.getIntervalMs(),
+      intervalMs,
       maxSamples: MAX_SAMPLES,
       signal: controller.signal,
       onProgress: (sampled: number, estimatedTotal: number) => {
@@ -570,11 +649,18 @@ async function handleFile(file: File): Promise<void> {
         'フレームを取得できませんでした。ファイルが壊れているか、対応していない形式の可能性があります。',
       );
     }
+    // 0件で終わった場合も scannedIntervalMs は更新済みなので、ボタンの状態を
+    // 実態(currentFile はある・この間隔で一応スキャン済み)に合わせておく。
+    updateRescanState();
     return;
   }
 
   selected = computeSelection();
   resultsList.finalize(selected);
+  // スキャン完了。ここまでで scannedIntervalMs は今回使った指定値に更新済みなので、
+  // 通常は現在の入力値と一致して再スキャンボタンは無効になる(スキャン中は
+  // 設定パネルが disabled のため、スキャン中に間隔を変えることはできない)。
+  updateRescanState();
 }
 
 // ---- ダウンロード関連 ----
