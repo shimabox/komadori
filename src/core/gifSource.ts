@@ -227,11 +227,16 @@ export function planCompositeRange(
  *   委ねられる形になり、境界のグリッド点が前後どちらのフレームにも二重に
  *   属したり、逆にどちらにも属さなかったりすることはない
  * - 添字は先頭から昇順に一度ずつしか調べないため、返る配列も自然に昇順・重複なしになる
- * - 先頭フレームは`startMs = 0 = nextSampleAtMs`の初期値により、`delaysMs[0] > 0`
- *   である限り常に採用条件(`nextSampleAtMs < endMs`)を満たす
- * - `delaysMs[i]`が0のフレーム(表示区間が空)は採用しない。実運用では
- *   `gifuct-js`が0を100msへ補正するため出現しないが、純関数としての防御として
- *   明示的に除外する
+ * - 先頭フレーム(index 0)は、ディレイが0であっても常に採用する(完了条件)。
+ *   採用後の`nextSampleAtMs`の進め方は他のフレームと同じ式を使う。先頭の
+ *   ディレイが0なら`endMs`も0となり`nextSampleAtMs`は0のまま進まないが、これは
+ *   「時刻0に表示されているのは(区間が空の index 0 ではなく)次のフレーム」と
+ *   いう意味になるため、index 1 以降の判定にそのまま委ねられて問題ない
+ *   (グリッド点ではなくフレームを順に走査する構造なので無限ループにはならない)
+ * - index 1 以降で`delaysMs[i]`が0のフレーム(表示区間が空)は採用しない。
+ *   実運用では`gifuct-js`が0を100msへ補正するため出現しないが、純関数としての
+ *   防御として明示的に除外する。「先頭フレームは常に採用する」とは独立した
+ *   ルールなので、index 0 に対しては適用しない
  */
 export function pickIndicesByInterval(
   delaysMs: readonly number[],
@@ -255,7 +260,10 @@ export function pickIndicesByInterval(
   for (let i = 0; i < delaysMs.length && picked.length < safeMaxSamples; i++) {
     const startMs = elapsedMs;
     const endMs = startMs + delaysMs[i];
-    if (delaysMs[i] > 0 && nextSampleAtMs < endMs) {
+    // 先頭フレーム(index 0)はディレイが0でも常に採用する。index 1 以降は
+    // 表示区間 [startMs, endMs) がグリッド点を含む場合のみ採用する
+    // (ディレイ0は区間が空になるため、この条件だけで自然に除外される)。
+    if (i === 0 || nextSampleAtMs < endMs) {
       picked.push(i);
       // このフレームの表示区間 [startMs, endMs) に含まれるグリッド点は
       // すべて飛ばし、endMs 以上の直近のグリッド点まで進める。

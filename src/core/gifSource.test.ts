@@ -94,6 +94,18 @@ describe('pickIndicesByInterval', () => {
     expect(pickIndicesByInterval(delaysMs, 20, 600)[0]).toBe(0);
   });
 
+  it('先頭フレームのディレイが0でも、先頭フレームは常に採用される', () => {
+    // 「先頭フレームは常に採用する」は「表示区間が空(ディレイ0)のフレームは
+    // 採用しない」より優先される(後者は index 1 以降にのみ適用される)。
+    // index 0 のディレイが0でも表示区間 [0,0) がグリッド点を含むかは判定せず、
+    // 無条件で採用する。
+    expect(pickIndicesByInterval([0, 100, 100], 100, 600)).toEqual([0, 1, 2]);
+  });
+
+  it('先頭フレームのディレイが0でも1フレームのみのGIFで空配列にならない', () => {
+    expect(pickIndicesByInterval([0], 100, 600)).toEqual([0]);
+  });
+
   it('同じフレームを二度採用しない(戻り値に重複がない)', () => {
     const delaysMs = Array.from({ length: 30 }, () => 33);
     const result = pickIndicesByInterval(delaysMs, 20, 600);
