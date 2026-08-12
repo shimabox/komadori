@@ -34,7 +34,10 @@ export interface SettingsPanelHandle {
 const MIN_THRESHOLD_PERCENT = 0.5;
 const MAX_THRESHOLD_PERCENT = 30;
 const THRESHOLD_STEP = 0.5;
-const MIN_INTERVAL_MS = 20;
+// GIFのディレイはgifuct-js上10ms単位で持てる((gce.delay || 10) * 10)ため、
+// 下限をディレイの最小単位に合わせて10msにする。20msのままだと10msディレイの
+// GIFで全フレームを採用できなくなる(実効間隔が最小ディレイより粗くなるため)。
+const MIN_INTERVAL_MS = 10;
 const INTERVAL_STEP = 10;
 
 /** しきい値スライダーとサンプリング間隔の設定パネルを作る */

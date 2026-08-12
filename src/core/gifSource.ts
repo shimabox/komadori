@@ -211,14 +211,27 @@ export function planCompositeRange(
  *
  * - 実効間隔は動画と同じく`Math.max(intervalMs, Math.ceil(総再生時間 / maxSamples))`。
  *   0除算・0以下を避けるため最低でも1msは確保する
- * - フレーム`i`の表示開始時刻(`startMs[i]`、それ以前のディレイの累積)が
- *   次のサンプリンググリッド点(`nextSampleAtMs`)以上になった時点でそのフレームを
- *   採用し、`nextSampleAtMs`を「採用したフレームの`startMs`を超える直近の
- *   グリッド点」まで進める。これにより、1回のグリッド到達につき最大1フレームしか
- *   採用されない(=同じフレームの重複採用が起きない)
+ * - 動画側(`videoSource.ts`)はグリッド時刻へシークして「その時刻に表示されて
+ *   いるフレーム」を取得する。GIFでも同じ意味にするため、フレーム`i`の表示区間
+ *   `[startMs, endMs)`(`startMs`はそれ以前のディレイの累積、`endMs = startMs +
+ *   delaysMs[i]`)が次のサンプリンググリッド点(`nextSampleAtMs`)を含む場合に
+ *   そのフレームを採用する。「表示開始時刻がグリッド点以上」ではなく「表示区間が
+ *   グリッド点を含む」で判定することがポイントで、これを誤ると表示時間の長い
+ *   フレーム(例えば末尾で長時間静止するフレーム)がまるごと採用漏れする
+ * - 採用したら、`nextSampleAtMs`を「このフレームの表示区間に含まれる残りの
+ *   グリッド点をすべて飛ばし、`endMs`以上になる直近のグリッド点」まで進める。
+ *   `Math.ceil(endMs / effectiveIntervalMs) * effectiveIntervalMs`で求まる。
+ *   `endMs`がちょうどグリッド点の倍数のときはその式が`endMs`自身を返すが、
+ *   その点は「次フレームの表示開始時刻」でもあるため、次フレームの区間
+ *   `[endMs, ...)`の判定(`nextSampleAtMs < 次フレームのendMs`)にそのまま
+ *   委ねられる形になり、境界のグリッド点が前後どちらのフレームにも二重に
+ *   属したり、逆にどちらにも属さなかったりすることはない
  * - 添字は先頭から昇順に一度ずつしか調べないため、返る配列も自然に昇順・重複なしになる
- * - 先頭フレーム(index 0)は`startMs[0] === 0 === nextSampleAtMs`の初期値により、
- *   常に採用条件を満たす
+ * - 先頭フレームは`startMs = 0 = nextSampleAtMs`の初期値により、`delaysMs[0] > 0`
+ *   である限り常に採用条件(`nextSampleAtMs < endMs`)を満たす
+ * - `delaysMs[i]`が0のフレーム(表示区間が空)は採用しない。実運用では
+ *   `gifuct-js`が0を100msへ補正するため出現しないが、純関数としての防御として
+ *   明示的に除外する
  */
 export function pickIndicesByInterval(
   delaysMs: readonly number[],
@@ -241,13 +254,14 @@ export function pickIndicesByInterval(
 
   for (let i = 0; i < delaysMs.length && picked.length < safeMaxSamples; i++) {
     const startMs = elapsedMs;
-    if (startMs >= nextSampleAtMs) {
+    const endMs = startMs + delaysMs[i];
+    if (delaysMs[i] > 0 && nextSampleAtMs < endMs) {
       picked.push(i);
-      // 次にサンプリングすべきグリッド点を、採用したフレームの開始時刻を
-      // 超える直近の`effectiveIntervalMs`の倍数まで進める。
-      nextSampleAtMs = (Math.floor(startMs / effectiveIntervalMs) + 1) * effectiveIntervalMs;
+      // このフレームの表示区間 [startMs, endMs) に含まれるグリッド点は
+      // すべて飛ばし、endMs 以上の直近のグリッド点まで進める。
+      nextSampleAtMs = Math.ceil(endMs / effectiveIntervalMs) * effectiveIntervalMs;
     }
-    elapsedMs += delaysMs[i];
+    elapsedMs = endMs;
   }
 
   return picked;
