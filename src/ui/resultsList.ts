@@ -145,6 +145,12 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
   const items = new Map<number, ItemRefs>();
   // サムネイルクリックでの viewer 起動はスキャン完了(finalize)後のみ有効にする
   let viewerReady = false;
+  // 「全選択」「全解除」もスキャン完了(finalize)後のみ有効にする。appendFrame() が
+  // 呼ばれる(= フレームが積まれ始める)スキャン中は、ZIP ボタン・ビューアボタン・
+  // 個別チェックボックスと同様まだ操作不可であるべきなので、viewerReady とは別に
+  // 持つ(viewerReady は「viewer を開けるか」という別の意味を持つフラグなので、
+  // 意味を混ぜないようにする)。
+  let finalized = false;
 
   function updateSummary(): void {
     let adopted = 0;
@@ -157,8 +163,12 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
     // 「押しても何も起きない」状態のボタンは無効にする。appendFrame() / applySelection()
     // はいずれもここを通るため、この1箇所を相乗りさせれば個別チェックボックス操作・
     // しきい値変更・全選択/全解除自身のいずれの後でも有効/無効が追従する。
-    selectAllButton.disabled = !shouldEnableSelectAll(items.size, adopted);
-    deselectAllButton.disabled = !shouldEnableDeselectAll(adopted);
+    // ただし、スキャン中(finalize 前)に appendFrame() 経由でここへ来た場合は
+    // 常に無効のままにする(スキャン完了前に「全選択」だけ操作可能になり、しかも
+    // 完了時に main.ts 側の selected = computeSelection() で黙って上書きされてしまう
+    // のを防ぐ)。
+    selectAllButton.disabled = !finalized || !shouldEnableSelectAll(items.size, adopted);
+    deselectAllButton.disabled = !finalized || !shouldEnableDeselectAll(adopted);
   }
 
   function reset(): void {
@@ -173,6 +183,7 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
     selectAllButton.disabled = true;
     deselectAllButton.disabled = true;
     viewerReady = false;
+    finalized = false;
     resetZipButtonLabel();
     summary.textContent = '';
   }
@@ -260,6 +271,9 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
       refs.downloadButton.disabled = false;
       setThumbEnabled(refs.thumbWrap, true);
     }
+    // applySelection() 内の updateSummary() が「全選択」「全解除」の有効/無効を
+    // 判定するので、その前に finalized を立てておく。
+    finalized = true;
     applySelection(selected);
     zipButton.disabled = items.size === 0;
     viewButton.disabled = items.size === 0;
