@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { planCompositeRange } from './gifSource';
 
 describe('planCompositeRange', () => {
-  it('未合成(renderedUpTo = null)なら、リセット不要で 0 から合成を開始する', () => {
+  it('未合成(renderedUpTo = null)なら、0 から合成を開始する', () => {
     expect(planCompositeRange(null, 5)).toEqual({ reset: true, from: 0 });
   });
 
