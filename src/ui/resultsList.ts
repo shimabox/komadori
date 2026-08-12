@@ -1,4 +1,5 @@
 import type { SampledFrame } from '../core/types';
+import { shouldEnableDeselectAll, shouldEnableSelectAll } from './bulkSelection';
 
 export interface ResultsListCallbacks {
   /** チェックボックスが手動で切り替えられたときに呼ばれる */
@@ -7,6 +8,11 @@ export interface ResultsListCallbacks {
   onDownloadOne: (frameIndex: number) => void;
   /** ZIP 一括ダウンロードボタンが押されたときに呼ばれる */
   onDownloadZip: () => void;
+  /**
+   * 「全選択」「全解除」ボタンが押されたときに呼ばれる。真偽値1つで表現し、
+   * `true`なら全選択、`false`なら全解除(2つのコールバックには分けない)
+   */
+  onSelectAll: (adopted: boolean) => void;
   /**
    * viewer を開く操作(サムネイルクリック、または「ビューアで見る」ボタン)が
    * 行われたときに呼ばれる。`openerElement` は viewer を閉じた際にフォーカスを
@@ -82,6 +88,27 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
   const summary = document.createElement('span');
   summary.className = 'results-summary';
 
+  const selectAllButton = document.createElement('button');
+  selectAllButton.type = 'button';
+  selectAllButton.className = 'results-select-all-button';
+  selectAllButton.textContent = '全選択';
+  selectAllButton.disabled = true;
+  selectAllButton.addEventListener('click', () => callbacks.onSelectAll(true));
+
+  const deselectAllButton = document.createElement('button');
+  deselectAllButton.type = 'button';
+  deselectAllButton.className = 'results-select-all-button';
+  deselectAllButton.textContent = '全解除';
+  deselectAllButton.disabled = true;
+  deselectAllButton.addEventListener('click', () => callbacks.onSelectAll(false));
+
+  // サマリと「全選択」「全解除」をひとつのグループにまとめ、ヘッダー左端に
+  // 寄せる。右側の .results-actions(ビューア・ZIP という「出力の操作」)とは
+  // 役割を分け、こちらは「選択の状態と操作」を表す。
+  const summaryGroup = document.createElement('div');
+  summaryGroup.className = 'results-summary-group';
+  summaryGroup.append(summary, selectAllButton, deselectAllButton);
+
   const viewButton = document.createElement('button');
   viewButton.type = 'button';
   viewButton.className = 'results-view-button';
@@ -108,7 +135,7 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
   actions.className = 'results-actions';
   actions.append(viewButton, zipButton);
 
-  header.append(summary, actions);
+  header.append(summaryGroup, actions);
 
   const grid = document.createElement('div');
   grid.className = 'results-grid';
@@ -127,6 +154,11 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
       }
     }
     summary.textContent = `${items.size} 件中 ${adopted} 件を採用中`;
+    // 「押しても何も起きない」状態のボタンは無効にする。appendFrame() / applySelection()
+    // はいずれもここを通るため、この1箇所を相乗りさせれば個別チェックボックス操作・
+    // しきい値変更・全選択/全解除自身のいずれの後でも有効/無効が追従する。
+    selectAllButton.disabled = !shouldEnableSelectAll(items.size, adopted);
+    deselectAllButton.disabled = !shouldEnableDeselectAll(adopted);
   }
 
   function reset(): void {
@@ -138,6 +170,8 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
     element.hidden = true;
     zipButton.disabled = true;
     viewButton.disabled = true;
+    selectAllButton.disabled = true;
+    deselectAllButton.disabled = true;
     viewerReady = false;
     resetZipButtonLabel();
     summary.textContent = '';

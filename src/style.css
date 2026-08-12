@@ -389,10 +389,27 @@ button:disabled {
   flex-wrap: wrap;
 }
 
+/* サマリ + 「全選択」「全解除」のグループ。ヘッダー内では .results-actions との
+   space-between で左端に寄る(選択の状態と操作、をひとまとめにする) */
+.results-summary-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .results-summary {
   font-size: 0.9rem;
   color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* 「全選択」「全解除」ボタン。.results-zip-button(アクセント色)と競合しない
+   よう、枠線のみの控えめな見た目にする(.settings-rescan-button と同じ扱い)。 */
+.results-select-all-button {
+  font-size: 0.85rem;
+  padding: 6px 12px;
+  white-space: nowrap;
 }
 
 .results-grid {
@@ -622,11 +639,13 @@ button:disabled {
     align-items: stretch;
   }
 
+  .results-summary-group,
   .results-actions {
     flex-direction: column;
     align-items: stretch;
   }
 
+  .results-summary-group button,
   .results-actions button {
     width: 100%;
   }
