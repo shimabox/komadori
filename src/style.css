@@ -286,12 +286,6 @@ body {
   white-space: nowrap;
 }
 
-.settings-hint {
-  margin: 0;
-  font-size: 0.78rem;
-  color: var(--color-text-muted);
-}
-
 .settings-panel input:disabled {
   opacity: 0.5;
   cursor: not-allowed;

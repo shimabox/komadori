@@ -204,17 +204,75 @@ export function planCompositeRange(
   return { reset: false, from: renderedUpTo + 1 };
 }
 
-/** デコード後のフレーム数が maxSamples を超える場合に、均等間引きした添字配列を返す */
-function pickEvenIndices(total: number, maxSamples: number): number[] {
-  if (total <= maxSamples) {
-    return Array.from({ length: total }, (_, i) => i);
+/**
+ * 各フレームの表示時間(`delaysMs[i]`、単位はミリ秒)から、時間軸に沿って
+ * サンプリングするフレームの添字配列を返す。`videoSource.ts`の
+ * `effectiveIntervalMs`と同じ考え方で、動画とGIFのサンプリング挙動を揃える。
+ *
+ * - 実効間隔は動画と同じく`Math.max(intervalMs, Math.ceil(総再生時間 / maxSamples))`。
+ *   0除算・0以下を避けるため最低でも1msは確保する
+ * - 動画側(`videoSource.ts`)はグリッド時刻へシークして「その時刻に表示されて
+ *   いるフレーム」を取得する。GIFでも同じ意味にするため、フレーム`i`の表示区間
+ *   `[startMs, endMs)`(`startMs`はそれ以前のディレイの累積、`endMs = startMs +
+ *   delaysMs[i]`)が次のサンプリンググリッド点(`nextSampleAtMs`)を含む場合に
+ *   そのフレームを採用する。「表示開始時刻がグリッド点以上」ではなく「表示区間が
+ *   グリッド点を含む」で判定することがポイントで、これを誤ると表示時間の長い
+ *   フレーム(例えば末尾で長時間静止するフレーム)がまるごと採用漏れする
+ * - 採用したら、`nextSampleAtMs`を「このフレームの表示区間に含まれる残りの
+ *   グリッド点をすべて飛ばし、`endMs`以上になる直近のグリッド点」まで進める。
+ *   `Math.ceil(endMs / effectiveIntervalMs) * effectiveIntervalMs`で求まる。
+ *   `endMs`がちょうどグリッド点の倍数のときはその式が`endMs`自身を返すが、
+ *   その点は「次フレームの表示開始時刻」でもあるため、次フレームの区間
+ *   `[endMs, ...)`の判定(`nextSampleAtMs < 次フレームのendMs`)にそのまま
+ *   委ねられる形になり、境界のグリッド点が前後どちらのフレームにも二重に
+ *   属したり、逆にどちらにも属さなかったりすることはない
+ * - 添字は先頭から昇順に一度ずつしか調べないため、返る配列も自然に昇順・重複なしになる
+ * - 先頭フレーム(index 0)は、ディレイが0であっても常に採用する(完了条件)。
+ *   採用後の`nextSampleAtMs`の進め方は他のフレームと同じ式を使う。先頭の
+ *   ディレイが0なら`endMs`も0となり`nextSampleAtMs`は0のまま進まないが、これは
+ *   「時刻0に表示されているのは(区間が空の index 0 ではなく)次のフレーム」と
+ *   いう意味になるため、index 1 以降の判定にそのまま委ねられて問題ない
+ *   (グリッド点ではなくフレームを順に走査する構造なので無限ループにはならない)
+ * - index 1 以降で`delaysMs[i]`が0のフレーム(表示区間が空)は採用しない。
+ *   実運用では`gifuct-js`が0を100msへ補正するため出現しないが、純関数としての
+ *   防御として明示的に除外する。「先頭フレームは常に採用する」とは独立した
+ *   ルールなので、index 0 に対しては適用しない
+ */
+export function pickIndicesByInterval(
+  delaysMs: readonly number[],
+  intervalMs: number,
+  maxSamples: number,
+): number[] {
+  if (delaysMs.length === 0) {
+    return [];
   }
-  const step = total / maxSamples;
-  const picked = new Set<number>();
-  for (let i = 0; i < maxSamples; i++) {
-    picked.add(Math.min(total - 1, Math.floor(i * step)));
+
+  // maxSamples は呼び出し側で 1 以上に正規化される想定だが、0 除算や
+  // 空配列を返す意図しない挙動を避けるため、ここでも念のため 1 以上に丸める。
+  const safeMaxSamples = Math.max(1, Math.floor(maxSamples));
+  const totalMs = delaysMs.reduce((sum, delay) => sum + delay, 0);
+  const effectiveIntervalMs = Math.max(1, intervalMs, Math.ceil(totalMs / safeMaxSamples));
+
+  const picked: number[] = [];
+  let elapsedMs = 0;
+  let nextSampleAtMs = 0;
+
+  for (let i = 0; i < delaysMs.length && picked.length < safeMaxSamples; i++) {
+    const startMs = elapsedMs;
+    const endMs = startMs + delaysMs[i];
+    // 先頭フレーム(index 0)はディレイが0でも常に採用する。index 1 以降は
+    // 表示区間 [startMs, endMs) がグリッド点を含む場合のみ採用する
+    // (ディレイ0は区間が空になるため、この条件だけで自然に除外される)。
+    if (i === 0 || nextSampleAtMs < endMs) {
+      picked.push(i);
+      // このフレームの表示区間 [startMs, endMs) に含まれるグリッド点は
+      // すべて飛ばし、endMs 以上の直近のグリッド点まで進める。
+      nextSampleAtMs = Math.ceil(endMs / effectiveIntervalMs) * effectiveIntervalMs;
+    }
+    elapsedMs = endMs;
   }
-  return Array.from(picked).sort((a, b) => a - b);
+
+  return picked;
 }
 
 /**
@@ -226,11 +284,13 @@ function pickEvenIndices(total: number, maxSamples: number): number[] {
  * `scan()` の中でフレーム単位に行い、一定時間ごとにイベントループへ制御を
  * 返してキャンセルを検知できるようにする。
  *
- * GIF は間引きなしで全フレームを合成(disposal 処理込み)した上で、
- * 出力するサンプル数だけ均等間引きする。展開済みフレーム(patch 付き)は
- * `renderFull` での再合成のためインスタンス内に蓄積し、`dispose()` まで
- * 破棄しない(スキャンが先行し、`renderFull` はスキャン済みフレームに対して
- * のみ呼ばれる前提)。
+ * GIF は disposal 処理込みの合成のため全フレームを間引きなしで展開・合成する
+ * 必要がある(スキャン時間はサンプリング間隔を変えても変わらない)。その上で、
+ * `pickIndicesByInterval` により`videoSource.ts`と同じ考え方の時間ベースで
+ * 出力フレームを選ぶ(サンプリング間隔の指定値に応じて採用件数が変わる)。
+ * 展開済みフレーム(patch 付き)は`renderFull`での再合成のためインスタンス内に
+ * 蓄積し、`dispose()`まで破棄しない(スキャンが先行し、`renderFull`は
+ * スキャン済みフレームに対してのみ呼ばれる前提)。
  */
 export class GifSource implements FrameSource {
   private readonly file: File;
@@ -372,7 +432,18 @@ export class GifSource implements FrameSource {
       }
 
       const maxSamples = Math.max(1, opts.maxSamples);
-      const outputIndices = pickEvenIndices(rawFrames.length, maxSamples);
+      // 各フレームのディレイ(ミリ秒)を、LZW 展開前の生フレームの時点で
+      // gifuct-js の decompressFrame と同じ式(`(gce.delay || 10) * 10`)を
+      // 使って先に組み立てる。展開後の`frame.delay`は decompressFrame の
+      // 呼び出しごとにしか手に入らないため、ここで先に作った配列を
+      // 「サンプリング対象の選定」と「下のループの elapsedMs 加算」の両方で
+      // 共通して使うことで、採用したインデックスとタイムスタンプが
+      // 食い違わないようにする(gce が無いフレームは既存の FALLBACK_DELAY_MS
+      // に合わせる)。
+      const delaysMs = rawFrames.map((rawFrame) =>
+        rawFrame.gce ? (rawFrame.gce.delay || 10) * 10 : FALLBACK_DELAY_MS,
+      );
+      const outputIndices = pickIndicesByInterval(delaysMs, opts.intervalMs, maxSamples);
       const outputSet = new Set(outputIndices);
       const estimatedTotal = outputIndices.length;
 
@@ -438,9 +509,9 @@ export class GifSource implements FrameSource {
           }
         }
 
-        const delay =
-          typeof frame.delay === 'number' && frame.delay > 0 ? frame.delay : FALLBACK_DELAY_MS;
-        elapsedMs += delay;
+        // 展開後の frame.delay ではなく、上で先に組み立てた delaysMs(同じ式で
+        // 算出済み)を使う。両者を別々に計算すると値がずれ得るため、二重管理を避ける。
+        elapsedMs += delaysMs[i];
 
         // yield によるサスペンドは Promise の解決(マイクロタスク)止まりで、
         // ブラウザの入力処理・再描画までは保証されない。一定時間ごとに
