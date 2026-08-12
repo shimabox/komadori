@@ -247,17 +247,31 @@ function applyThreshold(): void {
   syncViewerDisplay();
 }
 
+/**
+ * サンプリング間隔の設定が`file`に対して意味を持つかどうかを返す。
+ * GifSourceはサンプリング間隔を参照せず、全フレームを対象にmaxSamplesで
+ * 均等間引きするだけ(この既存のGIFスキャン挙動は変更しない)。動画
+ * (VideoSource)だけがこの設定を使うため、GIFに対しては間隔を変えて
+ * 再スキャンしても結果が変わらない。ファイル未読み込み(null)は
+ * 「意味を持つ」扱いにしておく(初期状態のヒント文・判定に影響しないため)。
+ */
+function isIntervalApplicable(file: File | null): boolean {
+  return file === null || detectFileKind(file) !== 'gif';
+}
+
 // ---- 再スキャンボタンの有効/無効の反映 ----
 // 間隔入力の変更時・スキャン完了時(および早期returnで終わった場合)に呼び、
-// 実態(currentFile の有無、直前にスキャンした指定間隔、現在の入力値)から
-// shouldEnableRescan() で有効/無効を判定して settingsPanel へ反映する。
-// スキャン中の一時的な無効化は settingsPanel.setDisabled() が別途担当するため、
-// ここでは「スキャンしていない前提での本来あるべき状態」だけを渡せばよい。
+// 実態(currentFile の有無、直前にスキャンした指定間隔、現在の入力値、
+// GIFかどうか)から shouldEnableRescan() で有効/無効を判定して settingsPanel
+// へ反映する。スキャン中の一時的な無効化は settingsPanel.setDisabled() が
+// 別途担当するため、ここでは「スキャンしていない前提での本来あるべき状態」
+// だけを渡せばよい。
 function updateRescanState(): void {
   const enabled = shouldEnableRescan(
     currentFile !== null,
     scannedIntervalMs,
     settingsPanel.getIntervalMs(),
+    isIntervalApplicable(currentFile),
   );
   settingsPanel.setRescanEnabled(enabled);
 }
@@ -518,6 +532,10 @@ async function handleFile(file: File): Promise<void> {
   // 対象として残り続けることはない。
   currentFile = null;
   scannedIntervalMs = null;
+  // ファイル種別が確定するまでは「間隔が意味を持つ」デフォルト状態に戻して
+  // おく(GIF固有のヒント文が、無関係な次のファイルに引き継がれないように
+  // するため)。対応形式と確定した時点で、下で改めて実際の種別に合わせて設定し直す。
+  settingsPanel.setIntervalApplicable(true);
 
   // ファイル切替時は viewer を強制クローズし、フル解像度/サムネイルの
   // objectURL キャッシュを全て revoke する(session ガードパターンを踏襲)。
@@ -554,6 +572,11 @@ async function handleFile(file: File): Promise<void> {
 
   // ここまで来て初めて「対応形式のファイル」と確定するので、再スキャン用に保持する。
   currentFile = file;
+  // GifSourceはサンプリング間隔を参照しない(全フレームを対象にmaxSamplesで
+  // 均等間引きするだけ)ため、GIFの場合はヒント文と再スキャン可否判定の
+  // 両方に「この設定は使われない」ことを伝える。間隔入力欄自体は無効化しない
+  // (動画を読み込む前提で先に値だけ変えておきたいケースがあるため)。
+  settingsPanel.setIntervalApplicable(kind !== 'gif');
 
   const source: FrameSource = kind === 'gif' ? new GifSource(file) : new VideoSource(file);
   frameSource = source;
