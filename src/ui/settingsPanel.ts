@@ -123,8 +123,11 @@ export function createSettingsPanel(
 
   const intervalHint = document.createElement('p');
   intervalHint.className = 'settings-hint';
+  // 指定した間隔より粗くなる理由は2つある(上限による自動拡大と、GIFの元フレームの
+  // 粒度)。原因が違うので、まとめず一文ずつ独立させて書く。GIF の方は理屈だけだと
+  // 自分の状況と結びつかないため、具体例を添える。
   intervalHint.textContent =
-    '動画・GIFいずれも、長くサンプル数の上限を超える場合は、この間隔より広い間隔が自動的に使われます。間隔を変更した場合、反映するには「この間隔で再スキャン」を押してください。';
+    'この間隔でフレームを調べます。サンプル数が上限(600件)を超えるときは、これより広い間隔になります。GIFは1枚ずつの絵の集まりなので、元のフレームより細かくは調べられません(1フレーム500msのGIFは、10msと指定しても500ms間隔のままです)。変更したら「この間隔で再スキャン」を押すと反映されます。';
 
   element.append(thresholdRow, intervalRow, intervalHint);
 
