@@ -29,19 +29,6 @@ export interface SettingsPanelHandle {
    * ただしスキャン中(setDisabled(true)の間)は常に無効を維持する。
    */
   setRescanEnabled(enabled: boolean): void;
-  /**
-   * サンプリング間隔の設定が読み込み中のファイルに対して意味を持つかどうかを
-   * 伝える。GifSourceはサンプリング間隔を参照せず(全フレームを対象に
-   * maxSamplesで均等間引きするだけ)、動画(VideoSource)だけがこの設定を
-   * 使う。GIFを読み込んでいる間は`false`を渡すことで、ヒント文を
-   * 「この設定は使われない」旨に切り替える。ファイル未読み込みの初期状態は
-   * `true`(=間隔が意味を持つ状態)として扱う。
-   * 間隔入力欄自体は無効化しない(動画を読み込む前提で先に値だけ
-   * 変えておきたいケースがあるため)。再スキャンボタンの有効/無効は
-   * ここでは変えず、呼び出し側が`shouldEnableRescan()`の結果を
-   * `setRescanEnabled()`で反映する形のまま(この関数はヒント文の切り替えのみ担当)。
-   */
-  setIntervalApplicable(applicable: boolean): void;
 }
 
 const MIN_THRESHOLD_PERCENT = 0.5;
@@ -133,21 +120,10 @@ export function createSettingsPanel(
 
   const intervalHint = document.createElement('p');
   intervalHint.className = 'settings-hint';
+  intervalHint.textContent =
+    '動画・GIFいずれも、長くサンプル数の上限を超える場合は、この間隔より広い間隔が自動的に使われます。間隔を変更した場合、反映するには「この間隔で再スキャン」を押してください。';
 
   element.append(thresholdRow, intervalRow, intervalHint);
-
-  // サンプリング間隔が意味を持つかどうか(setIntervalApplicable() で
-  // main.ts から通知される)。GIF読み込み中は false になり、ヒント文が
-  // 「この設定は使われない」旨に切り替わる。初期状態(ファイル未読み込み)は
-  // true 扱い。
-  let intervalApplicable = true;
-
-  function refreshIntervalHint(): void {
-    intervalHint.textContent = intervalApplicable
-      ? '動画が長くサンプル数の上限を超える場合は、この間隔より広い間隔が自動的に使われます。間隔を変更した場合、反映するには「この間隔で再スキャン」を押してください。'
-      : 'GIFではこの設定は使われません。全フレームを対象に、サンプル数が上限を超える場合は自動的に均等間引きされます。';
-  }
-  refreshIntervalHint();
 
   // 再スキャンボタンの「意図した」有効/無効状態(setRescanEnabled() で
   // main.ts から指定される)。スキャン中(setDisabled(true))はこの値に
@@ -190,17 +166,11 @@ export function createSettingsPanel(
     refreshRescanButtonDisabled();
   }
 
-  function setIntervalApplicable(applicable: boolean): void {
-    intervalApplicable = applicable;
-    refreshIntervalHint();
-  }
-
   return {
     element,
     getThresholdPercent,
     getIntervalMs,
     setDisabled,
     setRescanEnabled,
-    setIntervalApplicable,
   };
 }
