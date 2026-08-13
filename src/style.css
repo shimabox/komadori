@@ -350,7 +350,8 @@ button:disabled {
 }
 
 .progress-cancel,
-.results-zip-button {
+.results-zip-button,
+.results-gif-button {
   background: var(--color-accent);
   border-color: var(--color-accent);
   color: var(--color-accent-contrast);
@@ -359,7 +360,8 @@ button:disabled {
 }
 
 .progress-cancel:hover:not(:disabled),
-.results-zip-button:hover:not(:disabled) {
+.results-zip-button:hover:not(:disabled),
+.results-gif-button:hover:not(:disabled) {
   background: var(--color-accent-strong);
   border-color: var(--color-accent-strong);
 }
