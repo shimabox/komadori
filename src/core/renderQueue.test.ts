@@ -83,17 +83,55 @@ describe('createRenderQueue', () => {
     expect(renderFull).toHaveBeenCalledTimes(2);
   });
 
-  it('積んだ時点とセッションがずれていたらrenderFullが呼ばれずにrejectする', async () => {
+  it('積んだ時点で既にセッションがずれていたらrenderFullが呼ばれずにrejectする', async () => {
     let session = 1;
     const renderFull = vi.fn().mockResolvedValue(new Blob());
     const source = makeFakeSource(renderFull);
     const queue = createRenderQueue({ getSession: () => session });
 
-    session = 2; // enqueue前にセッションが変わっている想定(実行直前の再チェック対象)
+    session = 2;
     const p = queue.enqueue(source, makeFrame(0), 1);
 
     await expect(p).rejects.toThrow();
     expect(renderFull).not.toHaveBeenCalled();
+  });
+
+  it('キューで待っている間にセッションが切り替わったらrenderFullが呼ばれずにrejectする', async () => {
+    // セッションの判定が「積んだ瞬間」ではなく「実行直前」に行われることを固定する。
+    // 上のテストは enqueue 前に既にセッションがずれているため、積んだ瞬間に判定する
+    // 実装でも通ってしまい、この性質を守れない。ここでは先行タスクでキューを塞ぎ、
+    // セッションが一致したまま2件目を積んでから切り替えることで、待ち行列にいる間の
+    // 切り替えを再現する。
+    let session = 1;
+    const first = deferred<Blob>();
+    const calls: number[] = [];
+    const renderFull = vi.fn((frame: SampledFrame) => {
+      calls.push(frame.index);
+      return frame.index === 0 ? first.promise : Promise.resolve(new Blob());
+    });
+    const source = makeFakeSource(renderFull);
+    const queue = createRenderQueue({ getSession: () => session });
+
+    // 1件目でキューを塞ぐ。2件目を積む時点ではセッションはまだ一致している。
+    const p1 = queue.enqueue(source, makeFrame(0), 1);
+    const p2 = queue.enqueue(source, makeFrame(1), 1);
+
+    // 1件目のコールバックが実際に走って renderFull を呼ぶまで待つ。ここで待たずに
+    // セッションを変えると、まだ動いていない1件目まで拒否されてしまい、狙った
+    // 「2件目だけが待ち行列で拒否される」状況にならない。
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toEqual([0]);
+
+    // 2件目が実行される前(= 待ち行列にいる間)にファイルが切り替わった状況。
+    session = 2;
+
+    first.resolve(new Blob());
+    await expect(p1).resolves.toBeInstanceOf(Blob);
+    await expect(p2).rejects.toThrow();
+
+    // 2件目の renderFull は呼ばれない(旧 source は dispose 済みの可能性があるため)。
+    expect(calls).toEqual([0]);
   });
 
   it('rejectされるエラーがAbortErrorである', async () => {
