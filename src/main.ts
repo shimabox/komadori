@@ -1,5 +1,6 @@
 import './style.css';
 import { extractChangedFrames } from './core/extractor';
+import { buildFrameFileName, detectFileKind, formatBytes, stripExtension } from './core/format';
 import type { FrameSource } from './core/frameSource';
 import { GifSource } from './core/gifSource';
 import type { SampledFrame } from './core/types';
@@ -20,49 +21,8 @@ const DEFAULT_THRESHOLD_PERCENT = 3;
 const DEFAULT_INTERVAL_MS = 200;
 const MAX_SAMPLES = 600;
 const LARGE_FILE_WARNING_BYTES = 500 * 1024 * 1024;
-const GIF_EXTENSION = /\.gif$/i;
-const VIDEO_EXTENSION = /\.(mp4|webm|mov|m4v|avi|mkv|ogv|ogg)$/i;
 /** viewer 用フル解像度キャッシュ(frameIndex -> objectURL)の上限件数。超過分は古い順に revoke する */
 const FULL_RES_CACHE_LIMIT = 20;
-
-type FileKind = 'gif' | 'video' | 'unknown';
-
-function detectFileKind(file: File): FileKind {
-  if (file.type === 'image/gif' || GIF_EXTENSION.test(file.name)) {
-    return 'gif';
-  }
-  if (file.type.startsWith('video/') || VIDEO_EXTENSION.test(file.name)) {
-    return 'video';
-  }
-  return 'unknown';
-}
-
-function stripExtension(filename: string): string {
-  const idx = filename.lastIndexOf('.');
-  return idx > 0 ? filename.slice(0, idx) : filename;
-}
-
-function formatBytes(bytes: number): string {
-  const mb = bytes / (1024 * 1024);
-  return `${mb.toFixed(1)}MB`;
-}
-
-function formatFileTimestamp(ms: number): string {
-  const totalMs = Math.max(0, Math.round(ms));
-  const minutes = Math.floor(totalMs / 60000);
-  const seconds = Math.floor((totalMs % 60000) / 1000);
-  const millis = totalMs % 1000;
-  const mm = String(minutes).padStart(2, '0');
-  const ss = String(seconds).padStart(2, '0');
-  const mss = String(millis).padStart(3, '0');
-  return `${mm}m${ss}s${mss}`;
-}
-
-/** ファイル名規則: {4桁ゼロ埋め連番}_{mm}m{ss}s{ミリ秒3桁}.png */
-function buildFrameFileName(sequence: number, timestampMs: number): string {
-  const seq = String(sequence).padStart(4, '0');
-  return `${seq}_${formatFileTimestamp(timestampMs)}.png`;
-}
 
 function triggerBlobDownload(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
