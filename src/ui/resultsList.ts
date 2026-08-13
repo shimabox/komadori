@@ -54,7 +54,9 @@ interface ItemRefs {
   thumbnailUrl: string;
 }
 
-const DEFAULT_ZIP_BUTTON_LABEL = '選択したフレームを ZIP でダウンロード';
+// 何を対象にするかは、すぐ左のサマリ(「n 件中 m 件を採用中」)が示しているため、
+// ラベル側で「選択したフレームを」まで繰り返さない。
+const DEFAULT_ZIP_BUTTON_LABEL = 'ZIP でダウンロード';
 const DEFAULT_GIF_BUTTON_LABEL = 'GIF でダウンロード';
 
 /**
