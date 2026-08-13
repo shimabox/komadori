@@ -190,6 +190,11 @@ const resultsList = createResultsList({
   onDownloadZip: () => {
     void downloadZip();
   },
+  onSelectAll: (adopted) => {
+    selected = adopted ? new Set(frames.map((f) => f.index)) : new Set();
+    resultsList.applySelection(selected);
+    syncViewerDisplay();
+  },
   onOpenViewer: (frameIndex, openerElement) => {
     openViewerAt(frameIndex, openerElement);
   },
