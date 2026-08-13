@@ -13,17 +13,12 @@ import { createProgressPanel } from './ui/progressPanel';
 import { shouldEnableRescan } from './ui/rescan';
 import { createResultsList } from './ui/resultsList';
 import { createSettingsPanel } from './ui/settingsPanel';
-import { createViewer } from './ui/viewer';
-import type { ViewerFrameData } from './ui/viewer';
-import { computeViewerCounter, findAdjacentFrame } from './ui/viewerNav';
-import type { ViewerNavDirection } from './ui/viewerNav';
+import { createViewerController } from './ui/viewerController';
 
 const DEFAULT_THRESHOLD_PERCENT = 3;
 const DEFAULT_INTERVAL_MS = 200;
 const MAX_SAMPLES = 600;
 const LARGE_FILE_WARNING_BYTES = 500 * 1024 * 1024;
-/** viewer 用フル解像度キャッシュ(frameIndex -> objectURL)の上限件数。超過分は古い順に revoke する */
-const FULL_RES_CACHE_LIMIT = 20;
 
 function triggerBlobDownload(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
@@ -96,19 +91,6 @@ let currentFile: File | null = null;
 // しまうため)。未スキャンの間は null。
 let scannedIntervalMs: number | null = null;
 
-// ---- viewer(ライトボックス)関連の状態 ----
-// viewer が表示中のフレームの index。閉じている間は null。
-let viewerOpenFrameIndex: number | null = null;
-// viewer 内「採用のみ表示」トグルの現在値(オーナーは main.ts。前後送りの
-// 対象決定に使うため、viewer からの通知をここへミラーする)。
-let viewerAdoptedOnly = false;
-// frameIndex -> サムネイル用 objectURL(表示直後の即時表示用。フル解像度と違い
-// 上限は設けず、ファイル切替時にまとめて revoke する)。
-const thumbUrlCache = new Map<number, string>();
-// frameIndex -> フル解像度 objectURL。上限 FULL_RES_CACHE_LIMIT 件、超過時は古い順に revoke する。
-const fullResCache = new Map<number, string>();
-// frameIndex -> 生成中の Promise(同じフレームへの renderFull 二重発行を防ぐ)。
-const fullResInFlight = new Map<number, Promise<void>>();
 // renderFull 呼び出しの直列化キュー。viewer のフル解像度生成と PNG/ZIP
 // ダウンロードが同じ FrameSource.renderFull(動画は共有 video 要素のシーク)を
 // 使うため、同時実行するとシークが混線する。全呼び出しをこの経由にする。
@@ -143,7 +125,7 @@ const resultsList = createResultsList({
     } else {
       selected.delete(frameIndex);
     }
-    syncViewerDisplay();
+    viewerController.sync();
   },
   onDownloadOne: (frameIndex) => {
     void downloadOne(frameIndex);
@@ -154,15 +136,19 @@ const resultsList = createResultsList({
   onSelectAll: (adopted) => {
     selected = adopted ? new Set(frames.map((f) => f.index)) : new Set();
     resultsList.applySelection(selected);
-    syncViewerDisplay();
+    viewerController.sync();
   },
   onOpenViewer: (frameIndex, openerElement) => {
-    openViewerAt(frameIndex, openerElement);
+    viewerController.openAt(frameIndex, openerElement);
   },
 });
 
-const viewer = createViewer({
-  onNavigate: (direction) => navigateViewer(direction),
+const viewerController = createViewerController({
+  getFrames: () => frames,
+  getSelected: () => selected,
+  getSession: () => currentSession,
+  getFrameSource: () => frameSource,
+  enqueueRenderFull: (source, frame, session) => enqueueRenderFull(source, frame, session),
   onToggleAdopt: (frameIndex, adopted) => {
     if (adopted) {
       selected.add(frameIndex);
@@ -170,17 +156,9 @@ const viewer = createViewer({
       selected.delete(frameIndex);
     }
     resultsList.applySelection(selected);
-    syncViewerDisplay();
-  },
-  onAdoptedOnlyChange: (adoptedOnly) => {
-    viewerAdoptedOnly = adoptedOnly;
-    syncViewerDisplay();
   },
   onDownload: (frameIndex) => {
     void downloadOne(frameIndex);
-  },
-  onClose: () => {
-    viewerOpenFrameIndex = null;
   },
 });
 
@@ -195,7 +173,7 @@ requireSlot('notice').append(notice.element);
 requireSlot('settings').append(settingsPanel.element);
 requireSlot('progress').append(progressPanel.element);
 requireSlot('results').append(resultsList.element);
-requireSlot('viewer').append(viewer.element);
+requireSlot('viewer').append(viewerController.element);
 
 // ---- しきい値の再評価(再デコードなし) ----
 function computeSelection(): Set<number> {
@@ -210,7 +188,7 @@ function applyThreshold(): void {
   }
   selected = computeSelection();
   resultsList.applySelection(selected);
-  syncViewerDisplay();
+  viewerController.sync();
 }
 
 // ---- 再スキャンボタンの有効/無効の反映 ----
@@ -242,204 +220,6 @@ function enqueueRenderFull(
   return renderQueue.enqueue(source, frame, session);
 }
 
-// ---- viewer のフル解像度キャッシュ ----
-function addToFullResCache(frameIndex: number, url: string): void {
-  fullResCache.set(frameIndex, url);
-  if (fullResCache.size <= FULL_RES_CACHE_LIMIT) {
-    return;
-  }
-  // 古い順(Map の挿入順)に revoke するが、viewer が表示中のフレームだけは
-  // 追い出し対象から除外する(除外しないと、高速送りでキューに溜まった
-  // 生成タスクが後から完了した際に、いま見ている画像の URL が追い出されて
-  // しまい得るため)。表示中フレームをスキップしてもなお上限を超えていれば
-  // 次に古いものを追い出す。
-  for (const [candidateIndex, candidateUrl] of fullResCache) {
-    if (fullResCache.size <= FULL_RES_CACHE_LIMIT) {
-      break;
-    }
-    if (candidateIndex === viewerOpenFrameIndex) {
-      continue;
-    }
-    fullResCache.delete(candidateIndex);
-    URL.revokeObjectURL(candidateUrl);
-  }
-}
-
-function clearFullResCache(): void {
-  for (const url of fullResCache.values()) {
-    URL.revokeObjectURL(url);
-  }
-  fullResCache.clear();
-  fullResInFlight.clear();
-}
-
-function clearThumbUrlCache(): void {
-  for (const url of thumbUrlCache.values()) {
-    URL.revokeObjectURL(url);
-  }
-  thumbUrlCache.clear();
-}
-
-function getViewerThumbUrl(frame: SampledFrame): string {
-  let url = thumbUrlCache.get(frame.index);
-  if (!url) {
-    url = URL.createObjectURL(frame.thumbnail);
-    thumbUrlCache.set(frame.index, url);
-  }
-  return url;
-}
-
-/**
- * 指定フレームのフル解像度が未取得・未生成中であれば、直列化キュー経由で
- * 生成を開始する。完了時、まだそのフレームが viewer に表示中であれば
- * (表示中フレームと生成完了フレームが一致する場合のみ)差し替える。
- * 高速送り中に古いフレームの生成が遅れて完了しても、現在の表示を
- * 上書きしないようにするためのトークン代わりに `viewerOpenFrameIndex` の
- * 一致チェックを使う。
- */
-function ensureFullRes(frame: SampledFrame): void {
-  if (fullResCache.has(frame.index) || fullResInFlight.has(frame.index)) {
-    return;
-  }
-  const source = frameSource;
-  if (!source) {
-    return;
-  }
-  const session = currentSession;
-
-  // `task` は下の .then ハンドラ内から参照する(ハンドラは非同期に実行される
-  // ため、その時点では既に代入済みで安全)。ファイル切替で fullResInFlight が
-  // clearFullResCache() によって一括 clear された後、新セッションが同じ
-  // frame.index を再登録している可能性があるため、削除は「自分が登録した
-  // エントリの場合のみ」(参照の同一性で判定)行う。こうしないと、遅れて
-  // 完了した旧タスクが新エントリを誤って削除し、二重発行防止が壊れる
-  // (二重生成されると fullResCache.set の上書きで先行 URL が revoke されずに
-  // リークする)。
-  const task: Promise<void> = enqueueRenderFull(source, frame, session).then(
-    (blob) => {
-      if (fullResInFlight.get(frame.index) === task) {
-        fullResInFlight.delete(frame.index);
-      }
-      if (session !== currentSession) {
-        return;
-      }
-      const url = URL.createObjectURL(blob);
-      addToFullResCache(frame.index, url);
-      if (viewerOpenFrameIndex === frame.index && viewer.isOpen()) {
-        viewer.applyFullImage(url);
-      }
-    },
-    (error) => {
-      // in-flight から外してから再描画する。先に外しておかないと、
-      // buildViewerFrameData の isLoadingFull が「まだ生成中」のままになり、
-      // ローディング表示が消えなくなってしまう。
-      if (fullResInFlight.get(frame.index) === task) {
-        fullResInFlight.delete(frame.index);
-      }
-      if (session !== currentSession) {
-        return;
-      }
-      console.error(error);
-      // フル解像度の取得に失敗した場合はサムネイル表示のまま。次回このフレームを
-      // 表示した際は(fullResInFlight にエントリが残っていないため)再試行される。
-      if (viewerOpenFrameIndex === frame.index && viewer.isOpen()) {
-        viewer.update(buildViewerFrameData(frame));
-      }
-    },
-  );
-
-  fullResInFlight.set(frame.index, task);
-}
-
-/** 現在の frames / selected / viewerAdoptedOnly から、viewer に渡す表示データを組み立てる */
-function buildViewerFrameData(frame: SampledFrame): ViewerFrameData {
-  // カウンタ(「n / 総数」)は「採用のみ表示」の状態に応じて基準を切り替える。
-  // OFF なら全フレーム基準、ON なら採用フレーム基準(findAdjacentFrame と同じ
-  // プール定義を使う純関数)。
-  const { position, total } = computeViewerCounter(
-    frames,
-    frame.index,
-    selected,
-    viewerAdoptedOnly,
-  );
-  const hasPrev =
-    findAdjacentFrame(frames, frame.index, 'prev', selected, viewerAdoptedOnly) !== null;
-  const hasNext =
-    findAdjacentFrame(frames, frame.index, 'next', selected, viewerAdoptedOnly) !== null;
-  const cachedUrl = fullResCache.get(frame.index);
-
-  return {
-    frameIndex: frame.index,
-    position,
-    total,
-    timestampMs: frame.timestampMs,
-    imageUrl: cachedUrl ?? getViewerThumbUrl(frame),
-    adopted: selected.has(frame.index),
-    hasPrev,
-    hasNext,
-    adoptedCount: selected.size,
-    isLoadingFull: cachedUrl === undefined && fullResInFlight.has(frame.index),
-  };
-}
-
-/** サムネイルクリック・「ビューアで見る」ボタンから viewer を開く */
-function openViewerAt(frameIndex: number, openerElement: HTMLElement): void {
-  const frame = frames.find((f) => f.index === frameIndex);
-  if (!frame) {
-    return;
-  }
-  viewerOpenFrameIndex = frame.index;
-  viewerAdoptedOnly = false;
-  ensureFullRes(frame);
-  viewer.open(buildViewerFrameData(frame), openerElement);
-}
-
-/** viewer 内の ← → ボタン/キー操作から呼ばれる */
-function navigateViewer(direction: ViewerNavDirection): void {
-  if (viewerOpenFrameIndex === null) {
-    return;
-  }
-  const next = findAdjacentFrame(
-    frames,
-    viewerOpenFrameIndex,
-    direction,
-    selected,
-    viewerAdoptedOnly,
-  );
-  if (!next) {
-    return;
-  }
-  viewerOpenFrameIndex = next.index;
-  ensureFullRes(next);
-  viewer.update(buildViewerFrameData(next));
-}
-
-/**
- * viewer が開いている間に、しきい値変更・採用切替などで表示内容が
- * 古くなった際に呼ぶ。viewer が閉じていれば何もしない。
- */
-function syncViewerDisplay(): void {
-  if (viewerOpenFrameIndex === null) {
-    return;
-  }
-  const frame = frames.find((f) => f.index === viewerOpenFrameIndex);
-  if (!frame) {
-    closeViewerSilently();
-    return;
-  }
-  // 表示中フレームのフル解像度キャッシュが(上限による追い出し等で)無い
-  // 状態でここに来ても、フル解像度へ復帰できるようにする。既にキャッシュ
-  // 済み・生成中であれば ensureFullRes 内でそのまま no-op になる。
-  ensureFullRes(frame);
-  viewer.update(buildViewerFrameData(frame));
-}
-
-/** viewer を(閉じるコールバックを発火させずに)強制的に閉じる。ファイル切替時に使う */
-function closeViewerSilently(): void {
-  viewer.close();
-  viewerOpenFrameIndex = null;
-}
-
 // ---- ファイル読み込み・スキャン ----
 async function handleFile(file: File): Promise<void> {
   const session = ++currentSession;
@@ -467,9 +247,8 @@ async function handleFile(file: File): Promise<void> {
 
   // ファイル切替時は viewer を強制クローズし、フル解像度/サムネイルの
   // objectURL キャッシュを全て revoke する(session ガードパターンを踏襲)。
-  closeViewerSilently();
-  clearFullResCache();
-  clearThumbUrlCache();
+  viewerController.closeSilently();
+  viewerController.clearCaches();
 
   notice.clear();
   resultsList.reset();
