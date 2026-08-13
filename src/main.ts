@@ -3,6 +3,7 @@ import { extractChangedFrames } from './core/extractor';
 import { buildFrameFileName, detectFileKind, formatBytes, stripExtension } from './core/format';
 import type { FrameSource } from './core/frameSource';
 import { GifSource } from './core/gifSource';
+import { createRenderQueue } from './core/renderQueue';
 import type { SampledFrame } from './core/types';
 import { VideoSource } from './core/videoSource';
 import { createZip } from './core/zip';
@@ -110,8 +111,8 @@ const fullResCache = new Map<number, string>();
 const fullResInFlight = new Map<number, Promise<void>>();
 // renderFull 呼び出しの直列化キュー。viewer のフル解像度生成と PNG/ZIP
 // ダウンロードが同じ FrameSource.renderFull(動画は共有 video 要素のシーク)を
-// 使うため、同時実行するとシークが混線する。全呼び出しをこの Promise 経由にする。
-let renderQueue: Promise<unknown> = Promise.resolve();
+// 使うため、同時実行するとシークが混線する。全呼び出しをこの経由にする。
+const renderQueue = createRenderQueue({ getSession: () => currentSession });
 
 // ---- UI コンポーネントの生成 ----
 const notice = createNotice();
@@ -231,34 +232,14 @@ function updateRescanState(): void {
 // viewer のフル解像度生成と PNG/ZIP ダウンロードが同じ FrameSource.renderFull
 // (動画は共有 video 要素のシーク)を使うため、同時実行するとシークが混線する。
 // 呼び出し元(downloadOne / downloadZip / viewer 用の ensureFullRes)は
-// 必ずこの関数経由で renderFull を呼ぶ。
-//
-// `session` は呼び出し側が「積んだ時点」の currentSession を渡す。キュー内の
-// 順番が回ってきて実際に実行する直前にも session を再確認し、その間に
-// ファイルが切り替わっていたら(session !== currentSession)、旧 source の
-// renderFull は呼ばずに中断扱いで reject する。旧 source は handleFile で
-// 既に dispose 済みの可能性があり、dispose 後の renderFull 挙動は
-// FrameSource の実装依存で「速やかに失敗する」保証がないため、そもそも
-// 呼び出さないことで新セッションの呼び出しが待たされることを防ぐ。
-// reject 後は呼び出し元の既存の `session !== currentSession` ガードが
-// 静かに無視する(videoSource 等の中断エラーと同じ扱い)。
+// 必ずこの関数経由で renderFull を呼ぶ。直列化・セッション再確認の詳細な
+// 挙動と理由は core/renderQueue.ts のコメントを参照。
 function enqueueRenderFull(
   source: FrameSource,
   frame: SampledFrame,
   session: number,
 ): Promise<Blob> {
-  const run = renderQueue.then(() => {
-    if (session !== currentSession) {
-      return Promise.reject(new DOMException('セッションが切り替わりました', 'AbortError'));
-    }
-    return source.renderFull(frame);
-  });
-  // 直前の呼び出しが失敗してもキューは止めず、次の呼び出しへ進む
-  renderQueue = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run;
+  return renderQueue.enqueue(source, frame, session);
 }
 
 // ---- viewer のフル解像度キャッシュ ----
