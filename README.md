@@ -22,6 +22,8 @@ komadori is a client-side web app that detects "change point" frames in videos a
 
 https://komadori.orukubami.sh を開き、動画またはGIFファイルをドラッグ&ドロップするだけです。詳しくは[使い方ガイド](docs/usage.md)へ。
 
+なお、他者が著作権を持つ動画やGIFから抽出した画像・GIFの公開・再配布には、権利者の許諾が必要な場合があります。抽出した画像・GIFは著作権の範囲内でご利用ください。
+
 ## ローカルで動かす
 
 Node.js v20.19.5以降を想定しています([mise](https://mise.jdx.dev/)を使っている場合は`mise install`で入ります)。
