@@ -66,6 +66,7 @@ appRoot.innerHTML = `
     </main>
     <footer class="app-footer">
       <p>読み込んだファイルはサーバーに送信されません。解析・抽出はすべてこのブラウザの中だけで行われます。</p>
+      <p>著作権のある動画・GIF から抽出した画像・GIF は、権利者の許諾の範囲内でご利用ください。</p>
     </footer>
     <div data-slot="viewer"></div>
   </div>
