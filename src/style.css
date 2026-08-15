@@ -130,6 +130,32 @@ body {
   margin: 0;
 }
 
+.app-footer-links {
+  margin-top: 8px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-footer-links a {
+  color: inherit;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  transition: color 0.15s ease;
+}
+
+.app-footer-links a:hover {
+  color: var(--color-accent-strong);
+}
+
+.app-footer-links a:focus-visible {
+  color: var(--color-accent-strong);
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
 /* ---- 共通パネル ---- */
 .dropzone,
 .settings-panel,

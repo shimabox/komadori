@@ -67,6 +67,19 @@ appRoot.innerHTML = `
     <footer class="app-footer">
       <p>読み込んだファイルはサーバーに送信されません。解析・抽出はすべてこのブラウザの中だけで行われます。</p>
       <p>著作権のある動画・GIF から抽出した画像・GIF は、権利者の許諾の範囲内でご利用ください。</p>
+      <nav class="app-footer-links" aria-label="関連リンク">
+        <a
+          href="https://x.com/shimabox"
+          target="_blank"
+          rel="me noopener noreferrer"
+        >@shimabox</a>
+        <span aria-hidden="true">·</span>
+        <a
+          href="https://github.com/shimabox/komadori"
+          target="_blank"
+          rel="noopener noreferrer"
+        >GitHub</a>
+      </nav>
     </footer>
     <div data-slot="viewer"></div>
   </div>
