@@ -88,6 +88,10 @@ let frames: SampledFrame[] = [];
 let selected = new Set<number>();
 let currentFileBaseName = 'frames';
 let abortController: AbortController | null = null;
+// ZIP / GIF 書き出しの中断用。スキャン用の abortController とはライフサイクルが
+// 異なる(スキャン完了後にしか書き出しは始まらない)ため別に持つ。書き出し中で
+// なければ null。null かどうかで「書き出し進行中か」の判定も兼ねる。
+let exportAbortController: AbortController | null = null;
 let currentSession = 0;
 // 再スキャン用に保持するファイル本体。対応形式であることが確定してから
 // (detectFileKind() が 'unknown' でないと分かってから)代入する。非対応形式で
@@ -153,6 +157,9 @@ const resultsList = createResultsList({
   },
   onOpenViewer: (frameIndex, openerElement) => {
     viewerController.openAt(frameIndex, openerElement);
+  },
+  onCancelExport: () => {
+    exportAbortController?.abort();
   },
 });
 
@@ -245,6 +252,12 @@ async function handleFile(file: File): Promise<void> {
   // 開始する場合は、この直後で改めて無効化する。
   abortController?.abort();
   abortController = null;
+  // 進行中の ZIP / GIF 書き出しも中断する(直後の frameSource.dispose() で
+  // renderFull が失敗するため放置しても止まるが、明示的に abort して次の
+  // フレーム境界で静かに抜けさせる)。null に戻すのはここで行い、旧書き出しの
+  // finally 側は「自分が積んだ controller のままか」を確認してから触る。
+  exportAbortController?.abort();
+  exportAbortController = null;
   frameSource?.dispose();
   frameSource = null;
   frames = [];
@@ -452,53 +465,67 @@ async function downloadZip(): Promise<void> {
     return;
   }
 
+  if (exportAbortController) {
+    // 書き出し中は startExport() が ZIP / GIF 両ボタンを無効化しているため
+    // 通常は到達しないが、二重起動をここでも防ぐ。
+    return;
+  }
+
   const plan = buildDownloadPlan(selected);
   const targets = Array.from(plan.values());
 
-  resultsList.setZipButtonEnabled(false);
+  const controller = new AbortController();
+  exportAbortController = controller;
+  resultsList.startExport('zip');
 
   try {
     const entries: { filename: string; blob: Blob }[] = [];
     for (let i = 0; i < targets.length; i++) {
-      if (session !== currentSession) {
+      if (session !== currentSession || controller.signal.aborted) {
         return;
       }
 
       const { sequence, frame } = targets[i];
-      resultsList.setZipButtonLabel(`生成中… (${i + 1}/${targets.length})`);
+      resultsList.setExportProgress(`生成中… (${i + 1}/${targets.length})`);
 
       const blob = await enqueueRenderFull(source, frame, session);
-      if (session !== currentSession) {
+      if (session !== currentSession || controller.signal.aborted) {
         return;
       }
 
       entries.push({ filename: buildFrameFileName(sequence, frame.timestampMs), blob });
     }
 
-    if (session !== currentSession) {
+    if (session !== currentSession || controller.signal.aborted) {
       return;
     }
-    resultsList.setZipButtonLabel('ZIP にまとめています…');
+    resultsList.setExportProgress('ZIP にまとめています…');
 
-    const zipBlob = await createZip(entries);
-    if (session !== currentSession) {
+    const zipBlob = await createZip(entries, { signal: controller.signal });
+    if (session !== currentSession || controller.signal.aborted) {
       return;
     }
 
     triggerBlobDownload(zipBlob, `${baseName}_frames.zip`);
   } catch (error) {
-    if (session !== currentSession) {
+    // キャンセル起因の失敗(createZip の AbortError や、ファイル切替による
+    // renderFull の失敗)はエラー表示しない。
+    if (session !== currentSession || controller.signal.aborted) {
       return;
     }
     console.error(error);
     notice.add('error', 'ZIP の生成に失敗しました。');
   } finally {
-    // 新セッション側の ZIP ボタンは handleFile 冒頭の resultsList.reset() /
+    // handleFile がファイル切替時に新しい値へ差し替えている可能性があるため、
+    // 自分が積んだ controller のままのときだけ片付ける。
+    if (exportAbortController === controller) {
+      exportAbortController = null;
+    }
+    // 新セッション側の ZIP / GIF ボタンは handleFile 冒頭の resultsList.reset() /
     // finalize() が初期化・復元する前提なので、旧セッションの後始末で
     // 新しい画面の状態を上書きしないようにする。
     if (session === currentSession) {
-      resultsList.resetZipButtonLabel();
-      resultsList.setZipButtonEnabled(true);
+      resultsList.finishExport();
     }
   }
 }
@@ -518,54 +545,68 @@ async function downloadGif(): Promise<void> {
     return;
   }
 
+  if (exportAbortController) {
+    // 書き出し中は startExport() が ZIP / GIF 両ボタンを無効化しているため
+    // 通常は到達しないが、二重起動をここでも防ぐ。
+    return;
+  }
+
   const plan = buildDownloadPlan(selected);
   const targets = Array.from(plan.values());
 
-  resultsList.setGifButtonEnabled(false);
+  const controller = new AbortController();
+  exportAbortController = controller;
+  resultsList.startExport('gif');
 
   try {
     const encoder = createGifEncoder({ maxWidth: GIF_MAX_WIDTH_PX, maxColors: GIF_MAX_COLORS });
 
     for (let i = 0; i < targets.length; i++) {
-      if (session !== currentSession) {
+      if (session !== currentSession || controller.signal.aborted) {
         return;
       }
 
       const { frame } = targets[i];
-      resultsList.setGifButtonLabel(`生成中… (${i + 1}/${targets.length})`);
+      resultsList.setExportProgress(`生成中… (${i + 1}/${targets.length})`);
 
       const blob = await enqueueRenderFull(source, frame, session);
-      if (session !== currentSession) {
+      if (session !== currentSession || controller.signal.aborted) {
         return;
       }
 
       await encoder.addFrame(blob, GIF_FRAME_DELAY_MS);
     }
 
-    if (session !== currentSession) {
+    if (session !== currentSession || controller.signal.aborted) {
       return;
     }
-    resultsList.setGifButtonLabel('GIF を書き出しています…');
+    resultsList.setExportProgress('GIF を書き出しています…');
 
     const gifBlob = encoder.finish();
-    if (session !== currentSession) {
+    if (session !== currentSession || controller.signal.aborted) {
       return;
     }
 
     triggerBlobDownload(gifBlob, `${baseName}_frames.gif`);
   } catch (error) {
-    if (session !== currentSession) {
+    // キャンセル起因の失敗(ファイル切替による renderFull の失敗など)は
+    // エラー表示しない。
+    if (session !== currentSession || controller.signal.aborted) {
       return;
     }
     console.error(error);
     notice.add('error', 'GIF の生成に失敗しました。');
   } finally {
-    // 新セッション側の GIF ボタンは handleFile 冒頭の resultsList.reset() /
+    // handleFile がファイル切替時に新しい値へ差し替えている可能性があるため、
+    // 自分が積んだ controller のままのときだけ片付ける。
+    if (exportAbortController === controller) {
+      exportAbortController = null;
+    }
+    // 新セッション側の ZIP / GIF ボタンは handleFile 冒頭の resultsList.reset() /
     // finalize() が初期化・復元する前提なので、旧セッションの後始末で
     // 新しい画面の状態を上書きしないようにする。
     if (session === currentSession) {
-      resultsList.resetGifButtonLabel();
-      resultsList.setGifButtonEnabled(true);
+      resultsList.finishExport();
     }
   }
 }

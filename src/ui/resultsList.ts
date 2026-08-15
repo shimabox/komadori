@@ -21,7 +21,12 @@ export interface ResultsListCallbacks {
    * 戻すべき要素(クリックされたサムネイルやボタン)
    */
   onOpenViewer: (frameIndex: number, openerElement: HTMLElement) => void;
+  /** ZIP / GIF 書き出し中のキャンセルボタンが押されたときに呼ばれる */
+  onCancelExport: () => void;
 }
+
+/** ZIP / GIF 書き出しの種別。startExport() で進捗ラベルの反映先を決めるのに使う */
+export type ExportKind = 'zip' | 'gif';
 
 export interface ResultsListHandle {
   element: HTMLElement;
@@ -33,18 +38,18 @@ export interface ResultsListHandle {
   finalize(selected: ReadonlySet<number>): void;
   /** しきい値変更時に呼ぶ。選択状態(チェック)のみを再構築なしで更新する */
   applySelection(selected: ReadonlySet<number>): void;
-  /** ZIP ボタンの有効/無効を切り替える */
-  setZipButtonEnabled(enabled: boolean): void;
-  /** ZIP ボタンのラベルを一時的に変更する(生成中の進捗表示用) */
-  setZipButtonLabel(label: string): void;
-  /** ZIP ボタンのラベルを既定のものに戻す */
-  resetZipButtonLabel(): void;
-  /** GIF ボタンの有効/無効を切り替える */
-  setGifButtonEnabled(enabled: boolean): void;
-  /** GIF ボタンのラベルを一時的に変更する(生成中の進捗表示用) */
-  setGifButtonLabel(label: string): void;
-  /** GIF ボタンのラベルを既定のものに戻す */
-  resetGifButtonLabel(): void;
+  /**
+   * ZIP / GIF 書き出しの開始時に呼ぶ。ZIP・GIF ボタンを両方無効化し
+   * (書き出しは一度にひとつだけ)、キャンセルボタンを表示する
+   */
+  startExport(kind: ExportKind): void;
+  /** 書き出し中の進捗をラベルとして反映する(startExport で指定した側のボタンに出す) */
+  setExportProgress(label: string): void;
+  /**
+   * 書き出しの終了時(完了・失敗・キャンセルのいずれでも)に呼ぶ。
+   * キャンセルボタンを隠し、ZIP・GIF ボタンをラベルごと元に戻す
+   */
+  finishExport(): void;
 }
 
 interface ItemRefs {
@@ -58,6 +63,7 @@ interface ItemRefs {
 // ラベル側で「選択したフレームを」まで繰り返さない。
 const DEFAULT_ZIP_BUTTON_LABEL = 'ZIP でダウンロード';
 const DEFAULT_GIF_BUTTON_LABEL = 'GIF でダウンロード';
+const DEFAULT_CANCEL_BUTTON_LABEL = 'キャンセル';
 
 /**
  * サムネイル(viewer を開く操作対象)の有効/無効を切り替える。
@@ -147,11 +153,25 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
   gifButton.disabled = true;
   gifButton.addEventListener('click', () => callbacks.onDownloadGif());
 
-  // 「ビューアで見る」・ZIP・GIF ボタンをひとつのグループにまとめ、ヘッダー右端に
-  // 寄せる(サマリは左、この3つは右、の2ブロック構成にする)。
+  // ZIP / GIF 書き出し中だけ表示するキャンセルボタン。押した瞬間に自身を
+  // 無効化してラベルを変え、「受け付けた」ことを見せる(実際の中断は
+  // 進行中のフレーム描画が一区切りついたタイミングになるため)。
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button';
+  cancelButton.className = 'results-cancel-button';
+  cancelButton.textContent = DEFAULT_CANCEL_BUTTON_LABEL;
+  cancelButton.hidden = true;
+  cancelButton.addEventListener('click', () => {
+    cancelButton.disabled = true;
+    cancelButton.textContent = 'キャンセル中…';
+    callbacks.onCancelExport();
+  });
+
+  // 「ビューアで見る」・ZIP・GIF・キャンセルボタンをひとつのグループにまとめ、
+  // ヘッダー右端に寄せる(サマリは左、こちらは右、の2ブロック構成にする)。
   const actions = document.createElement('div');
   actions.className = 'results-actions';
-  actions.append(viewButton, zipButton, gifButton);
+  actions.append(viewButton, zipButton, gifButton, cancelButton);
 
   header.append(summaryGroup, actions);
 
@@ -169,6 +189,9 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
   // 持つ(viewerReady は「viewer を開けるか」という別の意味を持つフラグなので、
   // 意味を混ぜないようにする)。
   let finalized = false;
+  // 進行中の書き出しの種別。進捗ラベルの反映先(ZIP / GIF ボタン)を決めるのに
+  // 使う。書き出し中でなければ null。
+  let activeExportKind: ExportKind | null = null;
 
   function updateSummary(): void {
     let adopted = 0;
@@ -203,6 +226,11 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
     deselectAllButton.disabled = true;
     viewerReady = false;
     finalized = false;
+    // 進行中の書き出しがある状態でファイルが切り替わった場合もここを通る。
+    // 旧セッション側の finishExport() は session ガードで呼ばれないため、
+    // キャンセルボタンの後始末はここで行う。
+    activeExportKind = null;
+    hideCancelButton();
     resetZipButtonLabel();
     resetGifButtonLabel();
     summary.textContent = '';
@@ -301,28 +329,49 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
     viewerReady = items.size > 0;
   }
 
-  function setZipButtonEnabled(enabled: boolean): void {
-    zipButton.disabled = !enabled;
-  }
-
-  function setZipButtonLabel(label: string): void {
-    zipButton.textContent = label;
-  }
-
   function resetZipButtonLabel(): void {
     zipButton.textContent = DEFAULT_ZIP_BUTTON_LABEL;
   }
 
-  function setGifButtonEnabled(enabled: boolean): void {
-    gifButton.disabled = !enabled;
-  }
-
-  function setGifButtonLabel(label: string): void {
-    gifButton.textContent = label;
-  }
-
   function resetGifButtonLabel(): void {
     gifButton.textContent = DEFAULT_GIF_BUTTON_LABEL;
+  }
+
+  function hideCancelButton(): void {
+    cancelButton.hidden = true;
+    cancelButton.disabled = false;
+    cancelButton.textContent = DEFAULT_CANCEL_BUTTON_LABEL;
+  }
+
+  function startExport(kind: ExportKind): void {
+    activeExportKind = kind;
+    // 書き出しは renderFull を直列に占有するため一度にひとつだけとし、
+    // もう一方のボタンも押せなくする。
+    zipButton.disabled = true;
+    gifButton.disabled = true;
+    cancelButton.hidden = false;
+    cancelButton.disabled = false;
+    cancelButton.textContent = DEFAULT_CANCEL_BUTTON_LABEL;
+  }
+
+  function setExportProgress(label: string): void {
+    if (activeExportKind === 'zip') {
+      zipButton.textContent = label;
+    } else if (activeExportKind === 'gif') {
+      gifButton.textContent = label;
+    }
+  }
+
+  function finishExport(): void {
+    activeExportKind = null;
+    hideCancelButton();
+    resetZipButtonLabel();
+    resetGifButtonLabel();
+    // 書き出しは finalize() 後にしか始まらないが、reset() 直後などに誤って
+    // 呼ばれても「フレームなしなのにボタンだけ有効」にならないようガードする。
+    const enabled = finalized && items.size > 0;
+    zipButton.disabled = !enabled;
+    gifButton.disabled = !enabled;
   }
 
   return {
@@ -331,11 +380,8 @@ export function createResultsList(callbacks: ResultsListCallbacks): ResultsListH
     appendFrame,
     finalize,
     applySelection,
-    setZipButtonEnabled,
-    setZipButtonLabel,
-    resetZipButtonLabel,
-    setGifButtonEnabled,
-    setGifButtonLabel,
-    resetGifButtonLabel,
+    startExport,
+    setExportProgress,
+    finishExport,
   };
 }
