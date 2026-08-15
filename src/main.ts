@@ -230,14 +230,16 @@ function updateRescanState(): void {
 // viewer のフル解像度生成と PNG/ZIP ダウンロードが同じ FrameSource.renderFull
 // (動画は共有 video 要素のシーク)を使うため、同時実行するとシークが混線する。
 // 呼び出し元(downloadOne / downloadZip / viewer 用の ensureFullRes)は
-// 必ずこの関数経由で renderFull を呼ぶ。直列化・セッション再確認の詳細な
-// 挙動と理由は core/renderQueue.ts のコメントを参照。
+// 必ずこの関数経由で renderFull を呼ぶ。直列化・セッション再確認・
+// signal(書き出しキャンセル)再確認の詳細な挙動と理由は
+// core/renderQueue.ts のコメントを参照。
 function enqueueRenderFull(
   source: FrameSource,
   frame: SampledFrame,
   session: number,
+  signal?: AbortSignal,
 ): Promise<Blob> {
-  return renderQueue.enqueue(source, frame, session);
+  return renderQueue.enqueue(source, frame, session, signal);
 }
 
 // ---- ファイル読み込み・スキャン ----
@@ -488,7 +490,7 @@ async function downloadZip(): Promise<void> {
       const { sequence, frame } = targets[i];
       resultsList.setExportProgress(`生成中… (${i + 1}/${targets.length})`);
 
-      const blob = await enqueueRenderFull(source, frame, session);
+      const blob = await enqueueRenderFull(source, frame, session, controller.signal);
       if (session !== currentSession || controller.signal.aborted) {
         return;
       }
@@ -569,7 +571,7 @@ async function downloadGif(): Promise<void> {
       const { frame } = targets[i];
       resultsList.setExportProgress(`生成中… (${i + 1}/${targets.length})`);
 
-      const blob = await enqueueRenderFull(source, frame, session);
+      const blob = await enqueueRenderFull(source, frame, session, controller.signal);
       if (session !== currentSession || controller.signal.aborted) {
         return;
       }

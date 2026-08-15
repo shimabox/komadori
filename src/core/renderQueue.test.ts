@@ -134,6 +134,46 @@ describe('createRenderQueue', () => {
     expect(calls).toEqual([0]);
   });
 
+  it('キューで待っている間にsignalがabortされたらrenderFullが呼ばれずにrejectする', async () => {
+    // ZIP / GIF 書き出しのキャンセルを想定したケース。先行タスク(viewer の
+    // フル解像度生成や PNG 保存)でキューが詰まっている間に abort された
+    // タスクは、実行直前の確認で renderFull を呼ばずに AbortError で拒否される。
+    const first = deferred<Blob>();
+    const calls: number[] = [];
+    const renderFull = vi.fn((frame: SampledFrame) => {
+      calls.push(frame.index);
+      return frame.index === 0 ? first.promise : Promise.resolve(new Blob());
+    });
+    const source = makeFakeSource(renderFull);
+    const queue = createRenderQueue({ getSession: () => 1 });
+    const controller = new AbortController();
+
+    // 1件目でキューを塞ぎ、2件目(書き出し由来のタスク)を signal 付きで積む。
+    const p1 = queue.enqueue(source, makeFrame(0), 1);
+    const p2 = queue.enqueue(source, makeFrame(1), 1, controller.signal);
+
+    // 1件目の renderFull が実際に走るまで待ってから abort する
+    // (待ち行列にいる間のキャンセルを再現するため)。
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toEqual([0]);
+
+    controller.abort();
+
+    first.resolve(new Blob());
+    await expect(p1).resolves.toBeInstanceOf(Blob);
+    try {
+      await p2;
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(DOMException);
+      expect((error as DOMException).name).toBe('AbortError');
+    }
+
+    // 2件目の renderFull は呼ばれない(キャンセル後の不要な描画を開始しない)。
+    expect(calls).toEqual([0]);
+  });
+
   it('rejectされるエラーがAbortErrorである', async () => {
     let session = 1;
     const renderFull = vi.fn().mockResolvedValue(new Blob());
